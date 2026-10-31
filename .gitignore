@@ -1,0 +1,15 @@
+# Credentials: fill in your own copy from firmware/main/secrets.example.h
+firmware/main/secrets.h
+
+# Build output, downloaded components, test results
+firmware/build/
+firmware/managed_components/
+firmware/sdkconfig.old
+firmware/test-output/
+
+# Full flash dump of the factory firmware (16 MB, specific to one board): keep it locally
+backup/*.bin
+
+.DS_Store
+__pycache__/
+*.pyc

@@ -1,0 +1,13 @@
+menu "Knob Pomodoro"
+
+config KNOB_DEBUG_INTERFACE
+    bool "Debug interface over USB (test commands, screen capture, telemetry)"
+    default y
+    help
+        Single-letter and "#" commands on the USB serial port, used by
+        tools/knob_test.py, plus TELEMETRY lines when switched on with
+        "#telemetry on" (off by default, saved across restarts).
+        Turn this off for a build that never reads USB input; the timer,
+        voice and Toggl work the same either way.
+
+endmenu

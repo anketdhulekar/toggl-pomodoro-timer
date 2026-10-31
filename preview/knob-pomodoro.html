@@ -1,0 +1,1101 @@
+<title>Knob Pomodoro</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: the knob sits on a quiet stage at left; a short instruction panel runs at right and stacks below on phones. */
+:root {
+  --bg: #EEF0F0;
+  --surface: #F9FAFA;
+  --stage: #E2E6E6;
+  --fg: #15191B;
+  --muted: #5A6469;
+  --line: #D3D9DA;
+  --accent: #C23B22;
+
+  /* The device is a physical object: same colors in both themes. */
+  --dial: #000000;
+  --slice: #FFC83D;
+  --warn: #FF4D06; /* Leuchtorange, RAL 2005 (screen approximation) */
+  --crit: #E8143A;
+  --tick: #2A2A2A;
+  --tick-major: #4A4A4A;
+  --ridge-a: #2F3134;
+  --ridge-b: #17181A;
+  --lip: #0E0F10;
+
+  --f-ui: "Manrope", system-ui, -apple-system, sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #101315; --surface: #171B1E; --stage: #0A0D0F; --fg: #E7EBEC;
+    --muted: #8D979C; --line: #283035; --accent: #FF7A5C;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #101315; --surface: #171B1E; --stage: #0A0D0F; --fg: #E7EBEC;
+  --muted: #8D979C; --line: #283035; --accent: #FF7A5C;
+  color-scheme: dark;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--f-ui);
+  font-size: 15px;
+  line-height: 1.55;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 32px 56px;
+}
+.wrap { max-width: 1040px; margin: 0 auto; display: grid; gap: 24px; }
+
+header { display: grid; gap: 6px; }
+h1 { font-weight: 700; font-size: clamp(30px, 4.5vw, 40px); line-height: 1.1; letter-spacing: -.02em; margin: 0; text-wrap: balance; }
+.lede { margin: 0; max-width: 60ch; color: var(--muted); }
+
+main { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 24px; align-items: start; }
+@media (max-width: 860px) { main { grid-template-columns: minmax(0, 1fr); } }
+
+/* Stage + device */
+.stage {
+  background: var(--stage);
+  border-radius: 20px;
+  container-type: inline-size;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 44px 16px 26px;
+  min-height: 600px;
+}
+@media (max-width: 860px) { .stage { min-height: 0; } }
+
+.device {
+  --d: min(360px, calc((100cqi - 32px) / 1.3));
+  position: relative;
+  width: calc(var(--d) * 1.3);
+  aspect-ratio: 1;
+  max-width: 100%;
+  border-radius: 50%;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  box-shadow: 0 34px 50px -22px rgba(0,0,0,.55), 0 10px 20px -8px rgba(0,0,0,.4);
+  outline: none;
+}
+.stage.actual .device { --d: 1.8in; }
+.device:focus-visible { box-shadow: 0 0 0 3px var(--stage), 0 0 0 5px var(--accent); }
+
+.knurl {
+  position: absolute; inset: 0; border-radius: 50%;
+  background: repeating-conic-gradient(var(--ridge-a) 0deg 2.5deg, var(--ridge-b) 2.5deg 5deg);
+  cursor: grab;
+}
+.knurl.dragging { cursor: grabbing; }
+.shade {
+  position: absolute; inset: 0; border-radius: 50%; pointer-events: none;
+  background:
+    radial-gradient(circle at 30% 22%, rgba(255,255,255,.20), transparent 52%),
+    radial-gradient(circle at 72% 82%, rgba(0,0,0,.45), transparent 58%);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.07), inset 0 -8px 14px rgba(0,0,0,.45);
+}
+.lip {
+  position: absolute; inset: calc(var(--d) * 0.105); border-radius: 50%; pointer-events: none;
+  background: var(--lip);
+  box-shadow: inset 0 2px 3px rgba(255,255,255,.10), 0 0 0 1px rgba(0,0,0,.7), 0 3px 8px rgba(0,0,0,.55);
+}
+.screen {
+  position: absolute; inset: calc(var(--d) * 0.15);
+  width: var(--d); height: var(--d);
+  border-radius: 50%; overflow: hidden; cursor: pointer; display: block;
+}
+
+@keyframes buzz {
+  0%, 66%, 100% { transform: translate(0, 0); }
+  8% { transform: translate(-1.5px, 1px); } 16% { transform: translate(1.5px, -1px); }
+  24% { transform: translate(-1.5px, -1px); } 32% { transform: translate(1.5px, 1px); }
+  40% { transform: translate(-1px, 1px); } 48% { transform: translate(1px, -1px); }
+  56% { transform: translate(-1px, 0); }
+}
+.device.buzz { animation: buzz .6s linear 3; }
+
+/* Screen contents (SVG user units = display pixels).
+   The slice, both hands and the off-slice text share one color; text inside the slice uses the dial color. */
+.s-bg { fill: var(--dial); transition: fill .4s ease; }
+.tick { stroke: var(--tick); stroke-width: 2; stroke-linecap: round; transition: stroke .4s ease; }
+.tick.major { stroke: var(--tick-major); stroke-width: 3; }
+/* "Fills the rim" style: the band behind the ticks takes the project color; ticks become dark notches on it. */
+.rim-band { fill: none; stroke-width: 25; opacity: 0; transition: opacity .3s ease, stroke .3s ease; }
+.rim-band.on { opacity: 1; }
+.rim-on .tick { stroke: rgba(0,0,0,.42); }
+.rim-on .tick.major { stroke: rgba(0,0,0,.62); }
+.pk-dot-none { fill: none; stroke: #8E8E94; stroke-width: 1.5; }
+.top-ring, .top-s { fill: none; stroke: var(--live, var(--slice)); stroke-width: 1.8; stroke-linecap: round; }
+.top-ring { stroke-opacity: .45; }
+.top-f { fill: var(--live, var(--slice)); }
+#topBtn { transition: opacity .25s ease; }
+.wifi-rim { fill: none; stroke: var(--tick-major); stroke-width: 1.7; stroke-linecap: round; opacity: 0; }
+.wifi-rim circle { fill: var(--tick-major); stroke: none; }
+.rim-on .wifi-rim { stroke: rgba(0,0,0,.62); }
+.rim-on .wifi-rim circle { fill: rgba(0,0,0,.62); }
+/* Mic button under the time: drawn with the text, so it flips color inside the slice too. */
+.mic { transition: opacity .25s ease; }
+.mic-s, .mic-ring { fill: none; stroke-width: 1.8; stroke-linecap: round; }
+.ink-out .mic-s, .ink-out .mic-ring { stroke: var(--live, var(--slice)); }
+.ink-in .mic-s, .ink-in .mic-ring { stroke: var(--dial); }
+/* --live is set every frame: the profile color, warming gradually to orange and then red near the end. */
+.s-slice { fill: var(--live, var(--slice)); }
+.s-hand { stroke: var(--live, var(--slice)); stroke-width: 4; stroke-linecap: round; }
+.ink-out { fill: var(--live, var(--slice)); }
+.ink-in { fill: var(--dial); transition: fill .4s ease; }
+.ink-glow { fill: var(--live, var(--slice)); }
+.pdots { opacity: 0; transition: opacity .4s ease; }
+.pdots.show { opacity: 1; }
+.pdot { transition: opacity .25s ease; }
+.s-digit { font-family: var(--f-ui); font-weight: 600; font-size: 96px; text-anchor: middle; }
+.s-status { font-family: var(--f-ui); font-weight: 600; font-size: 14px; text-anchor: middle; }
+.s-task { font-family: var(--f-ui); font-weight: 600; font-size: 18px; text-anchor: middle; }
+.paused .s-task { opacity: .55; }
+.s-proj { font-family: var(--f-ui); font-weight: 600; font-size: 15px; text-anchor: middle; opacity: .65; }
+.paused .s-proj { opacity: .36; }
+/* Project picker: a list on black, scrolled with the knob. */
+.picker { opacity: 0; transition: opacity .2s ease; pointer-events: none; }
+.picker.open { opacity: 1; }
+.pk-name { font-family: var(--f-ui); font-weight: 600; font-size: 18px; fill: #FFFFFF; }
+.pk-hint { font-family: var(--f-ui); font-weight: 600; font-size: 14px; text-anchor: middle; fill: #8E8E94; }
+.s-hold { fill: none; stroke: #8E8E94; stroke-opacity: .8; stroke-width: 3; stroke-linecap: round; }
+.paused .digits { opacity: .55; }
+
+@keyframes blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: .25; } }
+@keyframes breathe { 50% { opacity: .35; } }
+.blink { animation: blink 1s linear infinite; }
+.breathe { animation: breathe 2s ease-in-out infinite; }
+
+.stage-foot { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 8px 22px; margin-top: 30px; }
+.spec { font: 400 12px/1.4 var(--f-mono); color: var(--muted); }
+.motor { display: inline-flex; align-items: center; gap: 10px; font: 400 12px/1.4 var(--f-mono); color: var(--muted); }
+.motor b { font-weight: 500; color: var(--fg); }
+.bars { display: inline-flex; gap: 2px; align-items: center; height: 14px; }
+.bars i { display: block; width: 3px; height: 6px; border-radius: 2px; background: var(--muted); }
+.bars i:nth-child(2) { height: 12px; }
+.motor.on .bars i { background: var(--accent); animation: vib .08s linear infinite alternate; }
+.motor.on .bars i:nth-child(2) { animation-delay: .04s; }
+@keyframes vib { to { transform: scaleY(.35); } }
+
+/* Panel */
+.panel { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px; display: grid; gap: 14px; }
+.card h2 { font-weight: 600; font-size: 12px; line-height: 1.2; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); margin: 0; }
+
+.ctl { margin: 0; display: grid; gap: 12px; }
+.ctl dt { font-weight: 600; font-size: 15px; }
+.ctl dd { margin: 2px 0 0; color: var(--muted); font-size: 14px; line-height: 1.45; }
+kbd {
+  font: 500 11.5px/1 var(--f-mono); padding: 2px 6px; border-radius: 5px;
+  border: 1px solid var(--line); border-bottom-width: 2px; background: var(--bg); color: var(--fg);
+  white-space: nowrap;
+}
+
+.pad { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.btn {
+  font: 600 13.5px/1.2 var(--f-ui); color: var(--fg);
+  background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
+  padding: 10px 4px; cursor: pointer; font-variant-numeric: tabular-nums;
+}
+.btn:hover { border-color: var(--muted); }
+.btn:active { transform: translateY(1px); }
+.btn:focus-visible, .speed button:focus-visible, .switch input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.opt { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 14.5px; flex-wrap: wrap; }
+.speed { display: inline-flex; border: 1px solid var(--line); border-radius: 10px; padding: 3px; gap: 2px; background: var(--bg); }
+.speed button {
+  font: 600 13px/1 var(--f-ui); color: var(--muted); background: transparent; border: 0;
+  border-radius: 7px; padding: 7px 10px; cursor: pointer;
+}
+.speed button[aria-pressed="true"] { background: var(--fg); color: var(--bg); }
+.switch { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 14.5px; cursor: pointer; }
+.switch input {
+  appearance: none; -webkit-appearance: none; margin: 0; flex: none;
+  width: 38px; height: 22px; border-radius: 999px; background: var(--line); position: relative; cursor: pointer;
+  transition: background .2s;
+}
+.switch input::before {
+  content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%;
+  background: var(--surface); box-shadow: 0 1px 2px rgba(0,0,0,.3); transition: transform .2s;
+}
+.switch input:checked { background: var(--accent); }
+.switch input:checked::before { transform: translateX(16px); }
+.hint-sm { display: block; font-size: 12.5px; color: var(--muted); }
+.pal-name { color: var(--muted); margin-left: 4px; }
+.swatches { display: flex; flex-wrap: wrap; gap: 8px; max-width: 100%; }
+.sw {
+  --a: #000; --b: #fff;
+  width: 26px; height: 26px; border-radius: 50%; border: 0; padding: 0; cursor: pointer; flex: none;
+  background: conic-gradient(var(--b) 0deg 150deg, var(--a) 150deg 360deg);
+  box-shadow: 0 0 0 1px var(--line);
+}
+.sw[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--fg); }
+.sw:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+
+.grp { display: grid; gap: 6px; }
+.grp-label { font-size: 12.5px; color: var(--muted); }
+.guide { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 24px; align-items: start; }
+@media (max-width: 860px) { .guide { grid-template-columns: minmax(0, 1fr); } }
+.guide .ctl { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); column-gap: 24px; }
+.facts { margin: 0; padding-left: 18px; display: grid; gap: 8px; font-size: 14px; color: var(--muted); }
+.facts strong { color: var(--fg); font-weight: 600; }
+
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+@media (prefers-reduced-motion: reduce) {
+  .device.buzz, .blink, .breathe, .motor.on .bars i { animation: none; }
+  .ink-glow { display: none; }
+  .s-slice, .s-hand, .ink-out { transition: none; }
+}
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Knob Pomodoro</h1>
+    <p class="lede">A countdown with two hands. The slice between them is the time left, and it shrinks as the moving hand sweeps back to 12. The numbers flip color where the slice crosses them. In the last ten minutes the slice slowly warms up: it reaches Leuchtorange at five minutes and deep red at one. In the last minute the time itself pulses once a second, like a heartbeat. Pick a Toggl project and the rim around the dial takes on its color.</p>
+  </header>
+
+  <main>
+    <section class="stage" id="stage" aria-label="Device preview">
+      <div class="device" id="device" tabindex="0" aria-label="Pomodoro knob. Arrow keys turn the knob, Space taps the screen, R resets.">
+        <div class="knurl" id="knurl"></div>
+        <div class="shade"></div>
+        <div class="lip"></div>
+        <svg class="screen" id="screen" viewBox="0 0 360 360" aria-hidden="true">
+          <defs>
+            <clipPath id="sliceClip"><path id="clipShape"/></clipPath>
+            <filter id="glow" x="-30%" y="-80%" width="160%" height="260%"><feGaussianBlur stdDeviation="8"/></filter>
+            <linearGradient id="taskFadeGrad" gradientUnits="userSpaceOnUse" x1="65" y1="0" x2="295" y2="0">
+              <stop offset="0" stop-color="#000"/><stop offset=".07" stop-color="#fff"/>
+              <stop offset=".93" stop-color="#fff"/><stop offset="1" stop-color="#000"/>
+            </linearGradient>
+            <mask id="taskFade" maskUnits="userSpaceOnUse" x="0" y="0" width="360" height="360">
+              <rect x="65" y="80" width="230" height="60" fill="url(#taskFadeGrad)"/>
+            </mask>
+          </defs>
+          <circle class="s-bg" cx="180" cy="180" r="180"/>
+          <circle class="rim-band" id="rimBand" cx="180" cy="180" r="167.5"/>
+          <g id="ticks"></g>
+          <g class="wifi-rim" id="wifiRim">
+            <path d="M177.5 343.5a3.5 3.5 0 0 1 5 0M175.4 341.4a6.5 6.5 0 0 1 9.2 0M173.3 339.3a9.5 9.5 0 0 1 13.4 0"/>
+            <circle cx="180" cy="346" r="1.5"/>
+          </g>
+          <g id="face">
+            <g class="ink-glow" id="inkGlow" filter="url(#glow)" style="opacity: 0"></g>
+            <g class="ink-out" id="inkOut"></g>
+            <line class="s-hand" x1="180" y1="180" x2="180" y2="10"/>
+            <line class="s-hand" id="handMove" x1="180" y1="180" x2="180" y2="10"/>
+            <path class="s-slice" id="slice"/>
+            <g class="ink-in" id="inkIn" clip-path="url(#sliceClip)"></g>
+            <circle class="s-hold" id="holdRing" cx="180" cy="180" r="128" transform="rotate(-90 180 180)" stroke-dasharray="0 1000"/>
+          </g>
+          <g id="topBtn" style="opacity: 0">
+            <circle cx="180" cy="60" r="30.5" fill="#000"/>
+            <g transform="translate(180 60) scale(1.5) translate(-180 -298)">
+              <circle class="top-ring" cx="180" cy="298" r="19"/>
+              <path class="top-s" d="M173.3 291.3A9.5 9.5 0 1 1 170.5 298M180 298v-5.4M180 298l3.8 2.5"/>
+              <path class="top-f" d="M170.5 293.6l-3.6 5.2h7.2z"/>
+            </g>
+          </g>
+          <g class="picker" id="picker">
+            <circle cx="180" cy="180" r="180" fill="#000"/>
+            <g id="pkRows"></g>
+            <text class="pk-hint" id="pkHint" x="180" y="316">tap to choose</text>
+          </g>
+        </svg>
+      </div>
+      <div class="stage-foot">
+        <span class="motor" id="motor"><span class="bars" aria-hidden="true"><i></i><i></i><i></i></span><span>Vibration motor: <b id="motorText">idle</b></span></span>
+        <span class="spec">1.8-inch round IPS · 360 × 360 px</span>
+      </div>
+      <p class="sr" id="live" aria-live="polite"></p>
+    </section>
+
+    <aside class="panel">
+      <section class="card">
+        <h2>Gestures</h2>
+        <div class="grp">
+          <span class="grp-label">Knob</span>
+          <div class="pad" role="group" aria-label="Knob">
+            <button class="btn" type="button" id="btnLeft" data-act="left" aria-label="Turn knob left, minus one minute">−1 min</button>
+            <button class="btn" type="button" id="btnRight" data-act="right" aria-label="Turn knob right, plus one minute">+1 min</button>
+          </div>
+        </div>
+        <div class="grp">
+          <span class="grp-label">Screen</span>
+          <div class="pad" role="group" aria-label="Screen">
+            <button class="btn" type="button" id="btnTap" data-act="tap">Tap</button>
+            <button class="btn" type="button" id="btnHold" data-act="hold">Hold</button>
+            <button class="btn" type="button" id="btnSwipeL" data-act="swipeL">Swipe left</button>
+            <button class="btn" type="button" id="btnSwipeR" data-act="swipeR">Swipe right</button>
+            <button class="btn" type="button" id="btnSwipeD" data-act="swipeD">Swipe down</button>
+            <button class="btn" type="button" id="btnSwipeU" data-act="swipeU">Swipe up</button>
+          </div>
+        </div>
+        <div class="grp">
+          <span class="grp-label">Buttons</span>
+          <div class="pad" role="group" aria-label="On-screen buttons">
+            <button class="btn" type="button" id="btnMic" data-act="mic">Mic</button>
+            <button class="btn" type="button" id="btnClock" data-act="clock">Toggl entries</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Theme</h2>
+        <div class="opt">
+          <span>Color profile <span class="pal-name" id="palName">Sunflower</span></span>
+          <span class="swatches" id="swatches" role="group" aria-label="Colors"></span>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Wi-Fi</h2>
+        <div class="opt">
+          <span>Icon</span>
+          <span class="speed" role="group" aria-label="Wi-Fi icon placement">
+            <button type="button" data-wifi="mic" aria-pressed="false">Next to the mic</button>
+            <button type="button" data-wifi="rim" aria-pressed="true">In the rim</button>
+            <button type="button" data-wifi="offline" aria-pressed="false">Only when offline</button>
+          </span>
+        </div>
+        <label class="switch" for="optWifi">
+          <span>Connected<span class="hint-sm">Turn off to see the icon pulse while the knob reconnects.</span></span>
+          <input type="checkbox" id="optWifi" checked>
+        </label>
+      </section>
+
+      <section class="card">
+        <h2>Demo</h2>
+        <div class="opt">
+          <span>Speed</span>
+          <span class="speed" role="group" aria-label="Demo speed">
+            <button type="button" id="sp1" data-speed="1" aria-pressed="true">Real time</button>
+            <button type="button" id="sp10" data-speed="10" aria-pressed="false">10×</button>
+            <button type="button" id="sp60" data-speed="60" aria-pressed="false">60×</button>
+          </span>
+        </div>
+        <label class="switch" for="optActual">
+          <span>Show at actual size<span class="hint-sm">Approximate. Depends on your screen's pixel density.</span></span>
+          <input type="checkbox" id="optActual">
+        </label>
+      </section>
+    </aside>
+  </main>
+
+  <section class="guide" aria-label="How to use it">
+    <div class="card">
+      <h2>How to use it</h2>
+        <dl class="ctl">
+          <div><dt>Turn the knob</dt><dd>Adds or removes a minute while the timer is paused or reset. When paused, the seconds go back to :00. It's locked while counting down. Drag the ring, scroll over it, or press <kbd>←</kbd> <kbd>→</kbd>.</dd></div>
+          <div><dt>Tap the screen</dt><dd>Starts and pauses. A tap that just misses a button does nothing, so a near miss won't start the timer. Click the screen or press <kbd>Space</kbd>.</dd></div>
+          <div><dt>Hold the screen</dt><dd>Resets to the time you set. Press and hold, or press <kbd>R</kbd>.</dd></div>
+          <div><dt>Tap the mic</dt><dd>While the timer is stopped, tap the mic (bottom) and say what you're working on; a waveform shows it hearing you. It stops listening when you pause, or tap again. The task appears above the time (simulated here). Press <kbd>M</kbd>.</dd></div>
+          <div><dt>Tap the clock</dt><dd>While the timer is stopped, tap the clock badge (top) for your recent Toggl entries, newest first, with "No task" above them to clear the task. Turn the knob to scroll and tap to make one your task. The list is fetched fresh each time. Press <kbd>T</kbd>.</dd></div>
+          <div><dt>Swipe down</dt><dd>Opens your Toggl projects while the timer is stopped. Turn the knob to scroll, tap to choose, swipe up to close. The rim around the dial takes the project's color. Press <kbd>Shift</kbd> + <kbd>↓</kbd> <kbd>↑</kbd>.</dd></div>
+          <div><dt>Swipe left or right</dt><dd>Changes the slice's color profile while the timer is stopped. Drag across the screen, or press <kbd>Shift</kbd> + <kbd>←</kbd> <kbd>→</kbd>.</dd></div>
+        </dl>
+    </div>
+    <div class="card">
+      <h2>On the real device</h2>
+        <ul class="facts">
+          <li><strong>The full circle is 60 minutes.</strong> A 25-minute timer starts as a slice from 12 to 5 o'clock.</li>
+          <li><strong>Time's up is a vibration</strong> from the built-in motor. The board has no speaker.</li>
+          <li><strong>Your settings are remembered.</strong> The length, color profile and project you pick survive a power-off.</li>
+          <li><strong>Running time goes to Toggl.</strong> Each stretch between start and pause becomes a time entry with your task and project. The projects here are examples; the knob lists your own, in their Toggl colors.</li>
+          <li><strong>Recent entries come straight from Toggl.</strong> The clock button fetches your latest finished entries (up to 50) every time you press it.</li>
+          <li><strong>The Wi-Fi icon</strong> is steady when connected and pulses while reconnecting. Try the placements under Preview options.</li>
+        </ul>
+    </div>
+  </section>
+</div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const NS = "http://www.w3.org/2000/svg";
+  const DETENT = 15, HOLD_MS = 700, MAX_MIN = 60, WARN_MS = 5 * 60000, CRIT_MS = 60000;
+  const SLICE_R = 150, HAND_R = 170, CH = 2 * Math.PI * 128;
+
+  const device = $("device"), knurl = $("knurl"), screen = $("screen"), face = $("face");
+  const slice = $("slice"), clipShape = $("clipShape"), handMove = $("handMove"), holdRing = $("holdRing");
+  const motor = $("motor"), motorText = $("motorText"), live = $("live"), stage = $("stage");
+
+  let S;
+  const defaults = () => ({ setMin: 25, remaining: 25 * 60000, mode: "idle", speed: 1, actual: false, rot: 0, palette: "sunny", project: 0, task: "", wifi: true, wifiPos: "rim" });
+  // Swipeable color profiles. The orange and red warm-up colors are shared by both.
+  const PALETTES = {
+    // The face is always black with gray ticks; only the slice color changes.
+    sunny:   { name: "Sunflower", dial: "#000000", slice: "#FFC83D", tick: "#2A2A2A", major: "#4A4A4A" },
+    lagoon:  { name: "Lagoon",    dial: "#000000", slice: "#3FE0C5", tick: "#2A2A2A", major: "#4A4A4A" },
+    lime:    { name: "Lime",      dial: "#000000", slice: "#B8E34A", tick: "#2A2A2A", major: "#4A4A4A" },
+    glacier: { name: "Glacier",   dial: "#000000", slice: "#6EC6FF", tick: "#2A2A2A", major: "#4A4A4A" },
+    mint:    { name: "Mint",      dial: "#000000", slice: "#8EF0B8", tick: "#2A2A2A", major: "#4A4A4A" },
+    seafoam: { name: "Seafoam",   dial: "#000000", slice: "#A8EFE4", tick: "#2A2A2A", major: "#4A4A4A" },
+    cream:   { name: "Cream",     dial: "#000000", slice: "#F1E3C8", tick: "#2A2A2A", major: "#4A4A4A" },
+    mono:    { name: "Mono",      dial: "#000000", slice: "#FFFFFF", tick: "#2A2A2A", major: "#4A4A4A" },
+  };
+  const PAL_KEYS = Object.keys(PALETTES);
+
+  // Example Toggl projects (the knob loads yours), sorted by name, in Toggl's palette.
+  const PROJECTS = [
+    { id: 1, name: "Acme", color: "#0B83D9" },
+    { id: 7, name: "Admin", color: "#525266" },
+    { id: 2, name: "Client portal", color: "#9E5BD9" },
+    { id: 3, name: "Deep work", color: "#2DA608" },
+    { id: 4, name: "Hiring", color: "#D94182" },
+    { id: 5, name: "Knob firmware", color: "#06A893" },
+    { id: 6, name: "Writing", color: "#C7AF14" },
+  ];
+  const projectById = (id) => PROJECTS.find((p) => p.id === id);
+  // What the simulated voice "hears", in turn. Saying a project name selects that project.
+  const SAMPLE_TASKS = ["Acme design review", "Draft the onboarding email sequence for new self-serve customers",
+    "Hiring: portfolio reviews", "Inbox zero"];
+
+  // Color warming: profile color until 10 min, fading to orange by 5 min and to red by 1 min.
+  // The fade travels around the hue wheel (OKLCH), so in-between shades stay vivid instead of going gray.
+  const hexRgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
+  const toLin = (c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+  const toSrgb = (c) => (c <= 0.0031308 ? 12.92 * c : 1.055 * c ** (1 / 2.4) - 0.055);
+  function rgbToOklab(rgb) {
+    const [r, g, b] = rgb.map(toLin);
+    const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+    const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+    const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+    return [0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
+            1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
+            0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s];
+  }
+  function oklabToCss([L, a, b]) {
+    const l = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3;
+    const m = (L - 0.1055613458 * a - 0.0638541728 * b) ** 3;
+    const s = (L - 0.0894841775 * a - 1.2914855480 * b) ** 3;
+    const rgb = [ 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+                 -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+                 -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s];
+    return "rgb(" + rgb.map((c) => Math.round(Math.min(1, toSrgb(Math.max(0, c))) * 255)).join(",") + ")";
+  }
+  const mixLab = (p, q, t) => p.map((v, i) => v + (q[i] - v) * t);
+  const PURPLE = [285, 345]; // OKLCH hue band (degrees) the fade must never sweep through
+  function crossesPurple(h, dh) {
+    for (let k = 1; k < 24; k++) {
+      const deg = (((h + dh * k / 24) * 180 / Math.PI) % 360 + 360) % 360;
+      if (deg > PURPLE[0] && deg < PURPLE[1]) return true;
+    }
+    return false;
+  }
+  function mixLch(p, q, t) {
+    const lch = ([L, a, b]) => [L, Math.hypot(a, b), Math.atan2(b, a)];
+    let [L1, C1, h1] = lch(p);
+    const [L2, C2, h2] = lch(q);
+    if (C1 < 0.02) h1 = h2; // white/cream has no real hue: borrow the target's
+    let dh = h2 - h1;
+    if (dh > Math.PI) dh -= 2 * Math.PI; else if (dh < -Math.PI) dh += 2 * Math.PI;
+    // Avoid sweeping through purple (e.g. Glacier goes via teal and green), unless the color already is purple.
+    const startDeg = ((h1 * 180 / Math.PI) % 360 + 360) % 360;
+    const startsPurple = C1 >= 0.02 && startDeg > PURPLE[0] && startDeg < PURPLE[1];
+    if (!startsPurple && crossesPurple(h1, dh)) dh += dh > 0 ? -2 * Math.PI : 2 * Math.PI;
+    const L = L1 + (L2 - L1) * t, C = C1 + (C2 - C1) * t, h = h1 + dh * t;
+    return [L, C * Math.cos(h), C * Math.sin(h)];
+  }
+  // Leuchtorange (RAL 2005) is fluorescent; #FF4D06 is a screen approximation. The red is a deeper crimson so it stays distinct from it.
+  const ORANGE = rgbToOklab(hexRgb("#FF4D06")), RED = rgbToOklab(hexRgb("#E8143A"));
+  function warmColor(base, min) {
+    if (min >= 10) return base;
+    if (min >= 5) return mixLch(base, ORANGE, (10 - min) / 5);
+    if (min >= 1) return mixLch(ORANGE, RED, (5 - min) / 4);
+    return RED;
+  }
+
+  // Fixed 5-minute ticks around the rim.
+  for (let m = 0; m < 60; m += 5) {
+    const a = (m * 6 - 90) * Math.PI / 180, major = m % 15 === 0;
+    const l = document.createElementNS(NS, "line");
+    l.setAttribute("x1", (180 + 158 * Math.cos(a)).toFixed(2));
+    l.setAttribute("y1", (180 + 158 * Math.sin(a)).toFixed(2));
+    l.setAttribute("x2", (180 + 168 * Math.cos(a)).toFixed(2));
+    l.setAttribute("y2", (180 + 168 * Math.sin(a)).toFixed(2));
+    l.setAttribute("class", major ? "tick major" : "tick");
+    if (m === 30) l.id = "tick30"; // 6 o'clock: gives way to the Wi-Fi glyph in "In the rim"
+    $("ticks").appendChild(l);
+  }
+
+  // The readout is drawn twice: once in the slice color over the dial,
+  // and once in the dial color, clipped to the slice. Digits sit in fixed slots so they never shift.
+  function buildInk(group) {
+    const g = document.createElementNS(NS, "g");
+    g.setAttribute("class", "digits");
+    const slots = [[80, 214], [138, 214], [180, 210], [222, 214], [280, 214]].map(([x, y], i) => {
+      const t = document.createElementNS(NS, "text");
+      t.setAttribute("class", "s-digit"); t.setAttribute("x", x); t.setAttribute("y", y);
+      t.textContent = i === 2 ? ":" : "0";
+      g.appendChild(t); return t;
+    });
+    const st = document.createElementNS(NS, "text");
+    st.setAttribute("class", "s-status"); st.setAttribute("x", 180); st.setAttribute("y", 248);
+    // Task line: two copies so a long task can scroll in a loop; the project sits under it in small type.
+    const tk = document.createElementNS(NS, "g");
+    const [tkA, tkB] = [0, 1].map(() => {
+      const t = document.createElementNS(NS, "text");
+      t.setAttribute("class", "s-task"); t.setAttribute("x", 180); t.setAttribute("y", 122);
+      tk.appendChild(t); return t;
+    });
+    const pj = document.createElementNS(NS, "text");
+    pj.setAttribute("class", "s-proj"); pj.setAttribute("x", 180); pj.setAttribute("y", 126);
+    const pd = document.createElementNS(NS, "g");
+    pd.setAttribute("class", "pdots");
+    const pdots = PAL_KEYS.map((key, i) => {
+      const c = document.createElementNS(NS, "circle");
+      c.setAttribute("class", "pdot"); c.setAttribute("r", 3.5); c.setAttribute("cy", 288);
+      c.setAttribute("cx", 180 + (i - (PAL_KEYS.length - 1) / 2) * 14);
+      pd.appendChild(c); return c;
+    });
+    // Buttons under the time: mic (left) and recent Toggl entries (right), Wi-Fi status between them.
+    const mic = document.createElementNS(NS, "g");
+    mic.setAttribute("class", "mic");
+    mic.innerHTML = '<circle class="mic-ring" cx="180" cy="298" r="19"/>' +
+      '<rect x="175.5" y="286" width="9" height="15" rx="4.5"/>' +
+      '<path class="mic-s" d="M171.5 295.5a8.5 8.5 0 0 0 17 0M180 304v5M175.5 309.5h9"/>';
+    const clock = document.createElementNS(NS, "g");
+    clock.setAttribute("class", "mic"); clock.setAttribute("transform", "translate(0 -240)"); // top, at y 58
+    clock.innerHTML = '<circle class="mic-ring" cx="180" cy="298" r="19"/>' +
+      '<path class="mic-s" d="M173.3 291.3A9.5 9.5 0 1 1 170.5 298M180 298v-5.4M180 298l3.8 2.5"/>' +
+      '<path d="M170.5 293.6l-3.6 5.2h7.2z"/>';
+    const wifi = document.createElementNS(NS, "g");
+    wifi.setAttribute("class", "mic");
+    wifi.innerHTML = '<path class="mic-s" d="M177.5 300.5a3.5 3.5 0 0 1 5 0M175.4 298.4a6.5 6.5 0 0 1 9.2 0M173.3 296.3a9.5 9.5 0 0 1 13.4 0"/>' +
+      '<circle cx="180" cy="303" r="1.5"/>';
+    group.appendChild(g); group.appendChild(st); group.appendChild(pd); group.appendChild(tk); group.appendChild(pj); group.appendChild(mic);
+    const wave = document.createElementNS(NS, "g");
+    const bars = Array.from({ length: 21 }, (_, i) => {
+      const r = document.createElementNS(NS, "rect");
+      r.setAttribute("x", 180 + (i - 10) * 7 - 2); r.setAttribute("width", 4); r.setAttribute("rx", 2);
+      wave.appendChild(r); return r;
+    });
+    clock.style.display = "none"; // drawn as the top badge instead (#topBtn)
+    group.appendChild(clock); group.appendChild(wifi); group.appendChild(wave);
+    return { digits: g, slots, status: st, pdotsG: pd, pdots, task: tk, taskA: tkA, taskB: tkB, proj: pj, mic, micRing: mic.firstChild,
+             clock, clockRing: clock.firstChild, wifi, wave, bars };
+  }
+  // A blurred copy of the digits sits under the readout and supplies the glow for the pulse.
+  const glowG = $("inkGlow"), glowInk = buildInk(glowG);
+  glowInk.status.style.display = "none"; glowInk.pdotsG.style.display = "none"; glowInk.task.style.display = "none"; glowInk.proj.style.display = "none"; glowInk.mic.style.display = "none"; glowInk.clock.style.display = "none"; glowInk.wifi.style.display = "none"; glowInk.wave.style.display = "none";
+  const inks = [buildInk($("inkOut")), buildInk($("inkIn")), glowInk];
+
+  // List screen rows: each is a color dot and a name, centered together. It shows either the projects
+  // ("No project" first) or recent Toggl entries. item = { name, color, hollow, pick() }.
+  const PK_ROW = 44;
+  let pkRows = [];
+  function setRows(items) {
+    $("pkRows").replaceChildren();
+    pkRows = items.map((item) => {
+      const g = document.createElementNS(NS, "g");
+      const dot = document.createElementNS(NS, "circle");
+      const t = document.createElementNS(NS, "text");
+      t.setAttribute("class", "pk-name"); t.textContent = item.name;
+      g.appendChild(dot); g.appendChild(t); $("pkRows").appendChild(g);
+      return { item, g, dot, t };
+    });
+  }
+  const picker = { open: false, mode: "projects", loading: false, idx: 0, pos: 0, until: 0 };
+
+  // Example recent Toggl entries, newest first (the knob fetches yours, up to 50, each time).
+  // Repeats of the same task and project are shown once.
+  const RECENT = [
+    { label: "Acme design review", project: 1 },
+    { label: "Inbox zero", project: 7 },
+    { label: "Write the Q4 plan", project: 6 },
+    { label: "Hiring: portfolio reviews", project: 4 },
+    { label: "Firmware: Toggl entries list", project: 5 },
+    { label: "Lunch walk", project: 0 },
+    { label: "Client portal standup", project: 2 },
+  ];
+  const marquee = { text: null, since: 0, w: 0, proj: null, projShown: "" };
+  const voice = { state: "idle", next: 0, timer: 0 };
+
+  // Last-minute pulse: the time itself throbs once a second, a quick swell with a soft glow that settles back.
+  const reduceMotion = !!(window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches);
+  let pulseStart = null;
+  function beatAt(now) {
+    const p = ((now - pulseStart) % 1000) / 1000;
+    return p < 0.18 ? Math.sin((p / 0.18) * Math.PI / 2) : 0.5 + 0.5 * Math.cos(((p - 0.18) / 0.82) * Math.PI);
+  }
+
+  function slicePath(deg) {
+    const r = SLICE_R;
+    if (deg <= 0.05) return "";
+    if (deg >= 359.95) return `M180 ${180 - r}A${r} ${r} 0 1 1 180 ${180 + r}A${r} ${r} 0 1 1 180 ${180 - r}Z`;
+    const a = (deg - 90) * Math.PI / 180;
+    const x = (180 + r * Math.cos(a)).toFixed(2), y = (180 + r * Math.sin(a)).toFixed(2);
+    return `M180 180L180 ${180 - r}A${r} ${r} 0 ${deg > 180 ? 1 : 0} 1 ${x} ${y}Z`;
+  }
+
+  const announce = (t) => { live.textContent = t; };
+  const pulse2 = (now) => { const b = Math.sin(Math.PI * ((now / 1000) % 2) / 2); return (0.25 + 0.75 * b * b).toFixed(2); };
+  const hint = (text, ms = 1200) => { S.hint = { text, until: performance.now() + ms }; };
+
+  // Haptics (shown as an indicator; the real board uses a DRV2605 motor driver)
+  const HAP = { click: "detent click", bump: "edge bump", tick: "tap", double: "double pulse", alarm: "time's up, 3 long pulses" };
+  let hapT, buzzT;
+  function haptic(kind) {
+    motorText.textContent = HAP[kind];
+    motor.classList.remove("on"); void motor.offsetWidth; motor.classList.add("on");
+    clearTimeout(hapT);
+    hapT = setTimeout(() => motor.classList.remove("on"), kind === "alarm" ? 1800 : kind === "double" ? 450 : 220);
+    if (kind === "alarm") {
+      device.classList.remove("buzz"); void device.offsetWidth; device.classList.add("buzz");
+      clearTimeout(buzzT); buzzT = setTimeout(() => device.classList.remove("buzz"), 1900);
+    }
+  }
+
+  // State transitions
+  function resetToSet() { S.mode = "idle"; S.remaining = S.setMin * 60000; }
+  function finish() { S.mode = "done"; S.remaining = 0; haptic("alarm"); announce("Time's up"); }
+  function setProject(id) {
+    S.project = id;
+    const p = projectById(id);
+    announce(p ? "Project " + p.name : "No project");
+  }
+  function openPicker() {
+    if (S.mode === "running") { haptic("bump"); hint("pause to change project"); return; }
+    setRows([{ id: 0, name: "No project", hollow: true }, ...PROJECTS].map((p) => ({
+      name: p.name, color: p.color, hollow: !!p.hollow, id: p.id, pick: () => setProject(p.id),
+    })));
+    picker.mode = "projects"; picker.loading = false;
+    picker.idx = Math.max(0, pkRows.findIndex((r) => r.item.id === S.project));
+    picker.pos = picker.idx; picker.open = true; picker.until = performance.now() + 10000;
+    haptic("tick"); announce("Projects");
+  }
+  // Clock button: recent entries, "fetched" fresh every time (simulated with a short delay).
+  let entriesTimer = 0;
+  function openEntries() {
+    if (!micVisible() || voice.state !== "idle") return;
+    const NO_TASK = { name: "No task", hollow: true, pick: () => { S.task = ""; setProject(0); announce("Task cleared"); } };
+    setRows([NO_TASK]);
+    picker.mode = "entries"; picker.loading = true; picker.idx = 0; picker.pos = 0; picker.touched = false;
+    picker.open = true; picker.until = performance.now() + 10000;
+    haptic("tick"); announce("Loading recent Toggl entries");
+    clearTimeout(entriesTimer);
+    entriesTimer = setTimeout(() => {
+      if (!picker.open || picker.mode !== "entries") return;
+      setRows([NO_TASK, ...RECENT.map((e) => {
+        const proj = projectById(e.project);
+        return { name: e.label, color: proj ? proj.color : "#8E8E94", hollow: !proj,
+                 pick: () => { S.task = e.label; setProject(e.project); announce("Task: " + e.label); } };
+      })]);
+      if (!picker.touched) picker.idx = 1; // the newest entry; "No task" is one click up
+      picker.loading = false; picker.until = performance.now() + 10000;
+    }, 700);
+  }
+  function closePicker(choose) {
+    if (choose && pkRows[picker.idx]) pkRows[picker.idx].item.pick();
+    picker.open = false; haptic("tick");
+  }
+  // Mic button. Simulated voice: listening stops after a pause in speech (here: 2.2 s) or a second tap,
+  // then "transcribing", then a sample task arrives.
+  // Buttons are drawn 50% larger than the base icons (ring r 28.5). A tap inside BTN_R presses one;
+  // a tap that just misses (inside DEAD_R) does nothing, so a near miss never starts the timer.
+  const MIC_Y = 298, CLOCK_Y = 60, BTN_R = 38, DEAD_R = 46;
+  const micX = () => (S.wifiPos === "mic" ? 148 : 180); // shares the bottom with the Wi-Fi icon in "Next to the mic"
+  const micVisible = () => (S.mode === "idle" || S.mode === "paused") && !picker.open && performance.now() >= (S.dotsUntil || 0);
+  const waveLevels = new Array(21).fill(0);
+  let waveT = 0;
+  function micTap() {
+    if (voice.state !== "idle" || !micVisible()) return;
+    voice.state = "listening"; voice.since = performance.now(); waveLevels.fill(0); haptic("tick"); announce("Listening");
+    clearTimeout(voice.timer); voice.timer = setTimeout(voiceRelease, 2200);
+  }
+  function voiceRelease() {
+    if (voice.state !== "listening") return;
+    voice.state = "transcribing"; haptic("click");
+    clearTimeout(voice.timer);
+    voice.timer = setTimeout(() => {
+      const text = SAMPLE_TASKS[voice.next++ % SAMPLE_TASKS.length];
+      S.task = text; voice.state = "idle"; haptic("tick"); announce("Task: " + text);
+      const lower = text.toLowerCase();
+      const match = PROJECTS.filter((p) => new RegExp("\\b" + p.name.toLowerCase() + "\\b").test(lower))
+        .sort((a, b) => b.name.length - a.name.length)[0];
+      if (match) setProject(match.id);
+    }, 1200);
+  }
+  function tap(x, y) {
+    if (picker.open) { closePicker(true); return; }
+    if (voice.state === "listening") { voiceRelease(); return; }
+    if (x != null && micVisible()) {
+      const dMic = Math.hypot(x - micX(), y - MIC_Y), dClock = Math.hypot(x - 180, y - CLOCK_Y);
+      if (dMic < BTN_R) { micTap(); return; }
+      if (dClock < BTN_R) { openEntries(); return; }
+      if (dMic < DEAD_R || dClock < DEAD_R) { haptic("bump"); return; } // near miss: don't start the timer
+    }
+    if (S.mode === "idle" || S.mode === "paused") { S.mode = "running"; announce("Running"); }
+    else if (S.mode === "running") { S.mode = "paused"; announce("Paused"); }
+    else { resetToSet(); announce("Ready"); }
+    haptic("tick");
+  }
+  function hold() {
+    if (picker.open || voice.state === "listening") return;
+    if (S.mode === "idle") { haptic("bump"); return; }
+    resetToSet(); hint("reset"); announce("Reset"); haptic("double");
+  }
+  function turn(dir, fromDrag) {
+    if (!fromDrag) S.rot += dir * DETENT;
+    if (picker.open) {
+      const i = picker.idx + dir;
+      picker.until = performance.now() + 10000;
+      picker.touched = true;
+      if (i < 0 || i >= Math.max(1, pkRows.length)) { haptic("bump"); return; }
+      picker.idx = i; haptic("click"); return;
+    }
+    if (S.mode === "done") { haptic("bump"); return; }
+    if (S.mode === "idle") {
+      const n = S.setMin + dir;
+      if (n < 1 || n > MAX_MIN) { haptic("bump"); hint(n < 1 ? "1 min minimum" : "60 min maximum"); return; }
+      S.setMin = n; S.remaining = n * 60000;
+    } else if (S.mode === "running") {
+      haptic("bump"); hint("pause to adjust"); return;
+    } else {
+      // Paused: step whole minutes; the seconds reset to zero.
+      const m = Math.floor(S.remaining / 60000) + dir;
+      if (m < 1 || m > MAX_MIN) { haptic("bump"); hint(m < 1 ? "1 min minimum" : "60 min maximum"); return; }
+      S.remaining = m * 60000;
+    }
+    haptic("click");
+  }
+
+  function swipeV(down) {
+    if (picker.open) { if (!down) closePicker(false); return; }
+    if (down) openPicker();
+  }
+  function swipe(dir) {
+    if (picker.open) return;
+    if (S.mode === "running") { haptic("bump"); hint("pause to change colors"); return; }
+    const i = (PAL_KEYS.indexOf(S.palette) + dir + PAL_KEYS.length) % PAL_KEYS.length;
+    S.palette = PAL_KEYS[i];
+    syncOptions();
+    hint(PALETTES[S.palette].name.toLowerCase());
+    S.dotsUntil = performance.now() + 1500;
+    haptic("tick");
+  }
+
+  // Rendering
+  let shown = null, baseLab = null;
+  function render(now, dt) {
+    // The moving hand follows the time left continuously; knob steps glide instead of jumping.
+    const target = S.remaining / 60000;
+    if (shown === null) shown = target;
+    shown += (target - shown) * (1 - Math.exp(-dt / 60));
+    if (Math.abs(target - shown) < 0.0005) shown = target;
+    const deg = Math.max(0, Math.min(360, shown * 6));
+
+    const d = slicePath(deg);
+    slice.setAttribute("d", d);
+    clipShape.setAttribute("d", d);
+    const a = (deg - 90) * Math.PI / 180;
+    handMove.setAttribute("x2", (180 + HAND_R * Math.cos(a)).toFixed(2));
+    handMove.setAttribute("y2", (180 + HAND_R * Math.sin(a)).toFixed(2));
+
+    // Profile swaps glide over ~0.3 s; the warm-up follows the (smoothed) time left.
+    const proj = projectById(S.project);
+    const profLab = rgbToOklab(hexRgb(PALETTES[S.palette].slice));
+    const rimOn = !!proj;
+    const rim = $("rimBand");
+    rim.classList.toggle("on", rimOn);
+    if (proj) rim.style.stroke = proj.color;
+    screen.classList.toggle("rim-on", rimOn);
+    baseLab = baseLab ? mixLab(baseLab, profLab, 1 - Math.exp(-dt / 120)) : profLab;
+    screen.style.setProperty("--live", oklabToCss(warmColor(baseLab, shown)));
+    face.classList.toggle("paused", S.mode === "paused");
+
+    const s = Math.max(0, Math.ceil(S.remaining / 1000));
+    const txt = String(Math.floor(s / 60)).padStart(2, "0") + String(s % 60).padStart(2, "0");
+    const colon = S.mode === "running" && S.remaining > CRIT_MS && now % 1000 >= 500 ? ".3" : "1";
+    const hinting = S.hint && now < S.hint.until;
+    const st = hinting ? S.hint.text
+      : voice.state === "listening" ? ""
+      : voice.state === "transcribing" ? "transcribing\u2026"
+      : S.mode === "idle" ? "tap to start"
+      : S.mode === "paused" ? "paused"
+      : S.mode === "done" ? "time's up" : "";
+    const pulsing = !reduceMotion && (S.mode === "done" || (S.mode === "running" && S.remaining <= CRIT_MS));
+    if (pulsing && pulseStart === null) pulseStart = now;
+    if (!pulsing) pulseStart = null;
+    const f = pulsing ? beatAt(now) : 0;
+    const beatTf = "translate(180 182) scale(" + (1 + 0.07 * f).toFixed(4) + ") translate(-180 -182)";
+    glowG.style.opacity = (0.85 * f).toFixed(3);
+    const showDots = now < (S.dotsUntil || 0), palIdx = PAL_KEYS.indexOf(S.palette);
+    // Above the time: the task, with the project in small type under it.
+    // A task wider than 230 px rests for 2 s, then scrolls through at 30 px/s in a loop.
+    const taskText = S.task || "", projText = proj ? proj.name : "";
+    if (taskText !== marquee.text || (taskText && !marquee.w)) {
+      marquee.text = taskText; marquee.since = now;
+      inks[0].taskA.textContent = taskText;
+      marquee.w = taskText ? inks[0].taskA.getComputedTextLength() : 0;
+    }
+    if (projText !== marquee.proj) { // long project names end in an ellipsis
+      marquee.proj = projText;
+      const el = inks[0].proj;
+      let t = projText; el.textContent = t;
+      while (t.length > 1 && el.getComputedTextLength() > 230) { t = t.slice(0, -1).trimEnd(); el.textContent = t + "\u2026"; }
+      marquee.projShown = el.textContent;
+    }
+    const scrolling = marquee.w > 230;
+    let off = 0;
+    if (scrolling) {
+      const pass = (marquee.w + 48) / 30 * 1000, t = (now - marquee.since) % (2000 + pass);
+      off = t < 2000 ? 0 : Math.floor((t - 2000) * 30 / 1000);
+    }
+    const taskY = projText ? 108 : 122, projY = taskText ? 128 : 122;
+    for (const ink of [inks[0], inks[1]]) {
+      if (ink.taskA.textContent !== taskText) ink.taskA.textContent = taskText;
+      const copy = scrolling ? taskText : "";
+      if (ink.taskB.textContent !== copy) ink.taskB.textContent = copy;
+      ink.taskA.style.textAnchor = scrolling ? "start" : "middle";
+      ink.taskB.style.textAnchor = "start";
+      ink.taskA.setAttribute("x", scrolling ? 65 - off : 180);
+      ink.taskB.setAttribute("x", 65 - off + marquee.w + 48);
+      ink.taskA.setAttribute("y", taskY); ink.taskB.setAttribute("y", taskY);
+      if (scrolling) ink.task.setAttribute("mask", "url(#taskFade)"); else ink.task.removeAttribute("mask");
+      if (ink.proj.textContent !== marquee.projShown) ink.proj.textContent = marquee.projShown || "";
+      ink.proj.setAttribute("y", projY);
+    }
+    const breathing = (S.mode === "paused" || voice.state !== "idle") && !hinting;
+    // Mic: dim at rest, solid while listening, with the ring breathing like a level meter.
+    const micOn = micVisible() || voice.state !== "idle";
+    const listening = voice.state === "listening";
+    const micOpacity = !micOn ? 0 : listening ? 1 : 0.75;
+    const ringOpacity = listening ? 0.45 + 0.55 * Math.abs(Math.sin(now / 260)) : 0.45;
+    if (listening && now - waveT > 60) { // simulated: speech for ~1.6 s, then quiet
+      waveT = now;
+      const t = (now - voice.since) / 1000, talking = t < 1.6;
+      const v = talking ? Math.min(1, 0.25 + 0.55 * Math.abs(Math.sin(t * 7.3)) * (0.6 + 0.4 * Math.random())) : 0.04 * Math.random();
+      waveLevels.shift(); waveLevels.push(Math.sqrt(v));
+    }
+    // Top badge (recent Toggl entries): shown with the other buttons, dimmed while listening.
+    $("topBtn").style.opacity = !(micVisible() || voice.state !== "idle") ? "0" : voice.state === "idle" ? "0.9" : "0.35";
+    // Wi-Fi glyph in the rim at 6 o'clock (replaces that tick), always visible.
+    const rimWifi = S.wifiPos === "rim";
+    $("wifiRim").style.opacity = rimWifi ? (S.wifi ? "1" : pulse2(now)) : "0";
+    $("tick30").style.opacity = rimWifi ? "0" : "";
+    for (const ink of inks) {
+      [0, 1, 3, 4].forEach((slot, i) => { if (ink.slots[slot].textContent !== txt[i]) ink.slots[slot].textContent = txt[i]; });
+      ink.slots[2].style.opacity = colon;
+      ink.digits.setAttribute("transform", beatTf);
+      if (ink.status.textContent !== st) ink.status.textContent = st;
+      ink.status.classList.toggle("breathe", breathing);
+      ink.mic.style.opacity = micOpacity.toFixed(2);
+      ink.micRing.style.opacity = ringOpacity.toFixed(2);
+      ink.clock.style.opacity = !micOn ? "0" : voice.state === "idle" ? "0.75" : "0.3";
+      ink.clockRing.style.opacity = voice.state === "idle" ? "0.45" : "0.2";
+      ink.mic.setAttribute("transform", "translate(" + micX() + " 298) scale(1.5) translate(-180 -298)");
+      // Wi-Fi in the ink layers: beside the mic, or (offline-only) under the mic just while disconnected.
+      const wb = Math.sin(Math.PI * ((now / 1000) % 2) / 2), pulse = (0.12 + 0.38 * wb * wb).toFixed(2);
+      const inkWifi = S.wifiPos === "mic" ? (S.wifi ? "0.6" : pulse) : S.wifiPos === "offline" && !S.wifi ? pulse : "0";
+      ink.wifi.style.opacity = micVisible() || S.wifiPos === "offline" ? inkWifi : "0";
+      ink.wifi.setAttribute("transform", S.wifiPos === "mic" ? "translate(28 0)" : "translate(0 30)");
+      // Waveform: bar heights follow the last ~1.3 s of mic level.
+      ink.wave.style.display = listening ? "" : "none";
+      if (listening) ink.bars.forEach((r, i) => {
+        const h = 3 + 21 * waveLevels[i];
+        r.setAttribute("y", (248 - h / 2).toFixed(1)); r.setAttribute("height", h.toFixed(1));
+      });
+      ink.pdotsG.classList.toggle("show", showDots);
+      ink.pdots.forEach((c, i) => { c.style.opacity = i === palIdx ? "1" : ".35"; });
+    }
+
+    if (press.active && !press.fired && !press.moved) {
+      const t = Math.max(0, Math.min(1, (now - press.start - 120) / (HOLD_MS - 120)));
+      holdRing.setAttribute("stroke-dasharray", (t * CH).toFixed(2) + " " + CH.toFixed(2));
+      holdRing.style.visibility = t > 0 ? "visible" : "hidden";
+    } else holdRing.style.visibility = "hidden";
+
+    // Picker: rows glide to the selection; the dot shows each project's color ("No project" shows the profile color).
+    if (picker.open && now > picker.until) closePicker(false);
+    $("picker").classList.toggle("open", picker.open);
+    const pkHint = picker.loading ? "loading\u2026" : pkRows.length > (picker.mode === "entries" ? 1 : 0) ? "tap to choose" : "no recent entries";
+    if ($("pkHint").textContent !== pkHint) $("pkHint").textContent = pkHint;
+    picker.pos += (picker.idx - picker.pos) * (1 - Math.exp(-dt / 70));
+    pkRows.forEach((r, i) => {
+      const d = Math.abs(i - picker.pos), alpha = Math.max(0, 1 - 0.36 * d);
+      r.g.style.display = alpha > 0 ? "" : "none";
+      if (!alpha) return;
+      const y = 180 + (i - picker.pos) * PK_ROW;
+      const w = r.t.getComputedTextLength(), left = 180 - (20 + w) / 2;
+      const sel = i === picker.idx;
+      r.dot.setAttribute("cx", (left + 6).toFixed(1)); r.dot.setAttribute("cy", (y - 0.5).toFixed(1));
+      r.dot.setAttribute("r", sel ? 6 : 4.5);
+      const hollow = r.item.hollow; // no project = no rim color
+      r.dot.setAttribute("class", hollow ? "pk-dot-none" : "");
+      r.dot.setAttribute("fill", hollow ? "none" : r.item.color);
+      r.t.setAttribute("x", (left + 20).toFixed(1)); r.t.setAttribute("y", (y + 6).toFixed(1));
+      r.g.style.opacity = alpha.toFixed(3);
+    });
+
+    knurl.style.transform = "rotate(" + S.rot + "deg)";
+  }
+
+  // Clock
+  let last = performance.now();
+  function frame(now) {
+    const dt = now - last; last = now;
+    if (S.mode === "running") {
+      S.remaining -= dt * S.speed;
+      if (S.remaining <= 0) finish();
+    }
+    render(now, dt);
+    requestAnimationFrame(frame);
+  }
+
+  // Input: screen press (tap vs hold)
+  const press = { active: false, fired: false, moved: false, start: 0, timer: 0, x: 0, y: 0 };
+  function pressStart(x = null, y = null) {
+    Object.assign(press, { active: true, fired: false, moved: false, start: performance.now(), x, y });
+    clearTimeout(press.timer);
+    press.timer = setTimeout(() => { if (press.active && !press.moved) { press.fired = true; hold(); } }, HOLD_MS);
+  }
+  function pressEnd(cancel) {
+    if (!press.active) return;
+    clearTimeout(press.timer); press.active = false;
+    if (!press.fired && !press.moved && !cancel) {
+      // Taps land where the finger went down, in display pixels (keyboard taps have no position).
+      if (press.x == null) { tap(); return; }
+      const r = screen.getBoundingClientRect();
+      tap((press.x - r.left) * 360 / r.width, (press.y - r.top) * 360 / r.height);
+    }
+  }
+  // Swipe distances are in display pixels, so they match the real 360 px screen at any preview size.
+  const toScreenPx = (v) => v * 360 / screen.getBoundingClientRect().width;
+  screen.addEventListener("pointerdown", (e) => {
+    if (e.button > 0) return;
+    e.preventDefault();
+    screen.setPointerCapture(e.pointerId);
+    pressStart(e.clientX, e.clientY);
+  });
+  screen.addEventListener("pointermove", (e) => {
+    if (!press.active || press.fired || press.moved) return;
+    const dx = toScreenPx(e.clientX - press.x), dy = toScreenPx(e.clientY - press.y);
+    if (Math.hypot(dx, dy) > 14) { press.moved = true; clearTimeout(press.timer); }
+  });
+  screen.addEventListener("pointerup", (e) => {
+    if (press.active && press.moved) {
+      const dx = toScreenPx(e.clientX - press.x), dy = toScreenPx(e.clientY - press.y);
+      if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.3) swipe(dx < 0 ? 1 : -1);
+      else if (Math.abs(dy) > 50 && Math.abs(dy) > Math.abs(dx) * 1.3) swipeV(dy > 0);
+    }
+    pressEnd(false);
+  });
+  screen.addEventListener("pointercancel", () => pressEnd(true));
+
+  // Input: knob ring drag
+  let drag = null;
+  const angleOf = (e) => {
+    const r = device.getBoundingClientRect();
+    return Math.atan2(e.clientY - (r.top + r.height / 2), e.clientX - (r.left + r.width / 2)) * 180 / Math.PI;
+  };
+  knurl.addEventListener("pointerdown", (e) => {
+    if (e.button > 0) return;
+    e.preventDefault();
+    knurl.setPointerCapture(e.pointerId);
+    drag = { a: angleOf(e), acc: 0 };
+    knurl.classList.add("dragging");
+  });
+  knurl.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    const a = angleOf(e);
+    let d = a - drag.a;
+    if (d > 180) d -= 360; else if (d < -180) d += 360;
+    drag.a = a; drag.acc += d; S.rot += d;
+    while (drag.acc >= DETENT) { turn(1, true); drag.acc -= DETENT; }
+    while (drag.acc <= -DETENT) { turn(-1, true); drag.acc += DETENT; }
+  });
+  const endDrag = () => { drag = null; knurl.classList.remove("dragging"); };
+  knurl.addEventListener("pointerup", endDrag);
+  knurl.addEventListener("pointercancel", endDrag);
+
+  // Input: wheel
+  let wheelAcc = 0, wheelT = 0;
+  device.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    clearTimeout(wheelT); wheelT = setTimeout(() => { wheelAcc = 0; }, 250);
+    wheelAcc += e.deltaY;
+    while (wheelAcc <= -40) { turn(1); wheelAcc += 40; }
+    while (wheelAcc >= 40) { turn(-1); wheelAcc -= 40; }
+  }, { passive: false });
+
+  // Input: keyboard
+  let spaceDown = false;
+  document.addEventListener("keydown", (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.target.closest && e.target.closest("button, input, select, textarea, a")) return;
+    if (e.shiftKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) { e.preventDefault(); swipe(e.key === "ArrowLeft" ? 1 : -1); return; }
+    if (e.shiftKey && (e.key === "ArrowDown" || e.key === "ArrowUp")) { e.preventDefault(); swipeV(e.key === "ArrowDown"); return; }
+    if (e.key === "Escape" && picker.open) { e.preventDefault(); closePicker(false); return; }
+    if (e.key === "ArrowRight" || e.key === "ArrowUp") { e.preventDefault(); turn(1); }
+    else if (e.key === "ArrowLeft" || e.key === "ArrowDown") { e.preventDefault(); turn(-1); }
+    else if (e.key === " " || e.key === "Enter") {
+      e.preventDefault();
+      if (!e.repeat && !spaceDown) { spaceDown = true; pressStart(); }
+    } else if (e.key === "r" || e.key === "R") { if (!e.repeat) hold(); }
+    else if (e.key === "m" || e.key === "M") { if (!e.repeat) micTap(); }
+    else if (e.key === "t" || e.key === "T") { if (!e.repeat) openEntries(); }
+  });
+  document.addEventListener("keyup", (e) => {
+    if ((e.key === " " || e.key === "Enter") && spaceDown) { spaceDown = false; pressEnd(false); }
+  });
+  window.addEventListener("blur", () => { spaceDown = false; pressEnd(true); endDrag(); });
+
+  // Panel controls
+  document.querySelectorAll("[data-act]").forEach((b) => b.addEventListener("click", () => {
+    const act = b.dataset.act;
+    if (act === "left") turn(-1); else if (act === "right") turn(1);
+    else if (act === "tap") tap(); else if (act === "hold") hold();
+    else if (act === "mic") micTap(); else if (act === "clock") openEntries();
+    else if (act === "swipeL") swipe(1); else if (act === "swipeR") swipe(-1);
+    else if (act === "swipeD") swipeV(true); else if (act === "swipeU") swipeV(false);
+  }));
+  const speedBtns = document.querySelectorAll("[data-speed]");
+  const swatches = Object.entries(PALETTES).map(([key, p]) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "sw"; b.id = "pal-" + key; b.title = p.name;
+    b.setAttribute("aria-label", p.name);
+    b.style.setProperty("--a", p.dial); b.style.setProperty("--b", p.slice);
+    b.addEventListener("click", () => { S.palette = key; syncOptions(); });
+    $("swatches").appendChild(b);
+    return [key, b];
+  });
+  const syncOptions = () => {
+    speedBtns.forEach((b) => b.setAttribute("aria-pressed", String(Number(b.dataset.speed) === S.speed)));
+    if (!PALETTES[S.palette]) S.palette = "sunny";
+    const p = PALETTES[S.palette];
+    [["--dial", p.dial], ["--slice", p.slice], ["--tick", p.tick], ["--tick-major", p.major]]
+      .forEach(([k, v]) => screen.style.setProperty(k, v));
+    swatches.forEach(([key, b]) => b.setAttribute("aria-pressed", String(key === S.palette)));
+    $("palName").textContent = p.name;
+    $("optActual").checked = S.actual;
+    stage.classList.toggle("actual", S.actual);
+  };
+  speedBtns.forEach((b) => b.addEventListener("click", () => { S.speed = Number(b.dataset.speed); syncOptions(); }));
+  $("optActual").addEventListener("change", (e) => { S.actual = e.target.checked; syncOptions(); });
+  $("optWifi").addEventListener("change", (e) => { S.wifi = e.target.checked; });
+  document.querySelectorAll("[data-wifi]").forEach((b) => b.addEventListener("click", () => {
+    S.wifiPos = b.dataset.wifi;
+    document.querySelectorAll("[data-wifi]").forEach((o) => o.setAttribute("aria-pressed", String(o === b)));
+  }));
+
+  // Boot (keeps timer state across live updates of this page)
+  function start(data) {
+    S = Object.assign(defaults(), data && data.v === 4 && data.S ? data.S : {});
+    S.hint = null; S.dotsUntil = 0;
+    syncOptions();
+    last = performance.now();
+    requestAnimationFrame(frame);
+  }
+  window.claude?.hot?.snapshot?.(() => ({ v: 4, S }));
+  window.claude?.hot?.ready ? window.claude.hot.ready(start) : start(window.claude?.hot?.data ?? {});
+})();
+</script>

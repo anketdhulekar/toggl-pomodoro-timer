@@ -1,0 +1,4 @@
+dependencies:
+  idf: ">=5.3"
+  # QSPI panel driver; used with Waveshare's ST77916 init sequence (see display.c)
+  espressif/esp_lcd_sh8601: "*"
