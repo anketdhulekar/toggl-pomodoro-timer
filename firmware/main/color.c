@@ -2,20 +2,9 @@
 
 #include <math.h>
 
-// Same order and values as the preview: Sunflower, Lagoon, Lime, Glacier, Mint, Seafoam, Cream, Mono.
-// The face is always black with neutral gray ticks; only the slice color changes.
-#define FACE 0x000000
-#define TICK 0x2A2A2A
-#define MAJOR 0x4A4A4A
-const palette_t PALETTES[PALETTE_COUNT] = {
-    {FACE, 0xFFC83D, TICK, MAJOR},
-    {FACE, 0x3FE0C5, TICK, MAJOR},
-    {FACE, 0xB8E34A, TICK, MAJOR},
-    {FACE, 0x6EC6FF, TICK, MAJOR},
-    {FACE, 0x8EF0B8, TICK, MAJOR},
-    {FACE, 0xA8EFE4, TICK, MAJOR},
-    {FACE, 0xF1E3C8, TICK, MAJOR},
-    {FACE, 0xFFFFFF, TICK, MAJOR},
+const theme_t THEMES[THEME_COUNT] = {
+    {0x000000, 0xFFFFFF, 0x8E8E94, 0x2A2A2A, 0x4A4A4A}, // Mono
+    {0xFFFFFF, 0x000000, 0x6E6E73, 0xD9D9D9, 0xB3B3B3}, // Inverted
 };
 
 #define LEUCHTORANGE 0xFF4D06 // RAL 2005, screen approximation
@@ -106,3 +95,5 @@ lab_t warm_color(lab_t base, float min)
     if (min >= 1) return lch_mix(orange, red, (5 - min) / 4);
     return red;
 }
+
+uint32_t readable_on(uint32_t rgb) { return rgb_to_oklab(rgb).L > 0.66f ? 0x111111 : 0xFFFFFF; }

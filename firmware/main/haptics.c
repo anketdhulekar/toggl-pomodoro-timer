@@ -32,11 +32,11 @@ static const uint8_t SEQS[HAP_COUNT][8] = {
     [HAP_BUMP] = {7},                                                  // Soft Bump
     [HAP_TAP] = {1},                                                   // Strong Click
     [HAP_DOUBLE] = {10},                                               // Double Click
-    [HAP_ALARM] = {15, WAIT_MS(250), 15, WAIT_MS(250), 15},            // 750 ms Alert x3
 };
 
 static i2c_master_dev_handle_t s_dev;
 static bool s_ok;
+static bool s_buzzing; // real-time playback at full scale (haptics_buzz)
 
 static esp_err_t wr(uint8_t reg, uint8_t v)
 {
@@ -81,9 +81,28 @@ void haptics_init(i2c_master_bus_handle_t bus)
     ESP_LOGI(TAG, "DRV2605 ready (device id %d)", status >> 5);
 }
 
+// Continuous vibration at full scale, using real-time playback (RTP): the motor runs at the
+// driver's full output (its open-loop clamp, the same level as the strongest library effect)
+// until switched off.
+void haptics_buzz(bool on)
+{
+    if (!s_ok || on == s_buzzing) return;
+    s_buzzing = on;
+    if (on) {
+        wr(REG_GO, 0);
+        wr(REG_RTPIN, 0x7F); // full scale (signed data format, the default)
+        wr(REG_MODE, 0x05);  // real-time playback
+    } else {
+        wr(REG_RTPIN, 0);
+        wr(REG_MODE, 0x00); // back to internal trigger (library effects)
+    }
+}
+
 void haptics_play(haptic_t h)
 {
-    if (!s_ok || h >= HAP_COUNT) return;
+    // While the time's-up buzz runs, other feedback (a list closing by itself, a sync
+    // result) is skipped. Touches and knob turns stop the buzz first, so theirs still plays.
+    if (!s_ok || h >= HAP_COUNT || s_buzzing) return;
     wr(REG_GO, 0);
     for (int i = 0; i < 8; i++) {
         wr(REG_WAVESEQ1 + i, SEQS[h][i]);

@@ -2,8 +2,8 @@
 #pragma once
 #include <stdint.h>
 
-// 8-bit coverage mask. (ox, oy) is the offset from the text anchor
-// (horizontal middle, alphabetic baseline) to the mask's top-left pixel.
+// 8-bit coverage mask. (ox, oy) is the offset from the anchor to the mask's top-left
+// pixel: the text's horizontal middle on the baseline for strings, the center for icons.
 typedef struct {
     uint16_t w, h;
     int16_t ox, oy;
@@ -11,59 +11,57 @@ typedef struct {
 } mask_t;
 
 typedef enum {
+    STR_TAP_TO_TRACK,
     STR_TAP_TO_START,
     STR_PAUSED,
     STR_TIMES_UP,
     STR_RESET,
     STR_MIN_1,
     STR_MAX_60,
-    STR_LESS_THAN_MIN,
-    STR_PAUSE_TO_CHANGE,
     STR_PAUSE_TO_ADJUST,
-    STR_PAL_SUNFLOWER,
-    STR_PAL_LAGOON,
-    STR_PAL_LIME,
-    STR_PAL_GLACIER,
-    STR_PAL_MINT,
-    STR_PAL_SEAFOAM,
-    STR_PAL_CREAM,
-    STR_PAL_MONO,
-    STR_LISTENING,
+    STR_PAUSE_TO_SWITCH,
+    STR_TRACKING,
+    STR_POMODORO,
+    STR_MONO,
+    STR_INVERTED,
+    STR_SYNCING,
+    STR_SYNCED,
+    STR_STOPPED_IN_TOGGL,
+    STR_IN_SYNC,
     STR_TRANSCRIBING,
     STR_NOT_HEARD,
     STR_NO_WIFI,
-    STR_VOICE_OFF,
     STR_STT_FAILED,
     STR_TAP_TO_CHOOSE,
-    STR_PAUSE_TO_PICK,
     STR_NO_PROJECTS,
     STR_TOGGL_OFF,
     STR_LOADING,
     STR_TOGGL_ERROR,
     STR_NO_ENTRIES,
+    STR_NOT_SAVED,
     STR_COUNT
 } str_id_t;
 
-#define STR_PAL_FIRST STR_PAL_SUNFLOWER
-
-// Run-time font for the task name: printable ASCII from TASK_FONT_FIRST, then an ellipsis.
-// Each mask is anchored at the pen position on the baseline; adv16 is the advance in 1/16 px.
+// Glyph fonts. Each mask is anchored at the pen position on the baseline; adv16 is the
+// advance in 1/16 px. Text fonts hold printable ASCII from FONT_FIRST, then an ellipsis;
+// time fonts hold the digits 0-9 (tabular) and a colon (TIME_COLON).
 typedef struct {
     mask_t m;
     uint16_t adv16;
 } glyph_t;
 
-#define TASK_FONT_FIRST 32
-#define TASK_FONT_ELLIPSIS 95
-#define TASK_FONT_COUNT 96
+#define FONT_FIRST 32
+#define FONT_ELLIPSIS 95
+#define FONT_COUNT 96
+#define TIME_COLON 10
 
-extern const mask_t GLYPH_DIGITS[10];
-extern const mask_t GLYPH_COLON;
-extern const mask_t GLOW_DIGITS[10];
-extern const mask_t GLOW_COLON;
-extern const mask_t STRINGS[STR_COUNT];
-extern const glyph_t TASK_FONT[TASK_FONT_COUNT];  // 18 px: the task
-extern const glyph_t SMALL_FONT[TASK_FONT_COUNT]; // 15 px: the project under it
-extern const mask_t MIC_ICON, MIC_RING; // mic button, anchored at its center
-extern const mask_t HISTORY_ICON;      // recent Toggl entries button (shares MIC_RING)
-extern const mask_t WIFI_ICON;         // Wi-Fi status, between the buttons
+extern const mask_t STRINGS[STR_COUNT];   // 14 px status words
+extern const char *const STRING_TEXT[];   // the same strings as text (debug)
+extern const glyph_t TIME_FONT[11];       // 88 px: MM:SS
+extern const glyph_t TIME_SMALL_FONT[11]; // 62 px: HH:MM:SS
+extern const glyph_t TIME_GLOW[11];       // 88 px, blurred (sigma 8): the pulse glow
+extern const glyph_t TASK_FONT[FONT_COUNT]; // 28 px: the task
+extern const glyph_t LIST_FONT[FONT_COUNT]; // 18 px: list rows
+extern const glyph_t PILL_FONT[FONT_COUNT]; // 15 px bold: the project pill
+extern const mask_t MIC_ICON, MIC_RING;   // mic button, anchored at its center
+extern const mask_t WIFI_ICON;            // Wi-Fi status, in the rim at 6 o'clock

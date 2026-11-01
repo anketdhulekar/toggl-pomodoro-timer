@@ -1,17 +1,23 @@
-// Software renderer for the two-hand countdown.
+// Software renderer for the Knob Timer face (same layout as the HTML preview).
 //
-// Layers, bottom to top (same as the HTML preview):
-//   static dial + ticks  ->  glow  ->  text in the live color  ->  hands  ->
-//   slice  ->  text in the dial color, clipped to the slice  ->  hold ring
-// The slice, hands and off-slice text share the live color, so they collapse
-// into one coverage value per pixel.
+// Layers, bottom to top:
+//   static background: face, project pill, rim band and ticks  ->  pulse glow  ->
+//   text (task, time, status, mic, waveform)  ->  Wi-Fi glyph  ->  hold ring
+//
+// The rim: two static backgrounds are built whenever the profile, mode, project
+// or Wi-Fi glyph changes: one with the rim "off" (Pomodoro: black band with a
+// faint ring; Tracking: the bare face) and one with the band "on" in the rim
+// color, ticks turned into dark notches. Each frame picks between them per
+// pixel by angle (the Pomodoro arc), with whole ticks switching at once, as in
+// the preview.
+//
+// One text layer holds coverage; its color depends on the row: the task rows
+// use the task color, everything below uses the live color (time, status, mic).
 //
 // Performance notes (ESP32-S3):
-// - libm calls (sqrtf, floorf, fminf...) are not inlined on Xtensa, and a
-//   loop with many live floats spills to the stack. So each row is drawn in
-//   small passes: live coverage (slice, rim, hands) into a byte buffer, then
-//   an integer compositing pass, then the hold ring.
-// - Only rows touched by a change are redrawn (see dirty_rows).
+// - libm calls (sqrtf, floorf, ...) are not inlined on Xtensa and float division
+//   is in software, so per-pixel loops avoid them.
+// - Only bands touched by a change are redrawn (see dirty_bands).
 #include "render.h"
 
 #include <math.h>
@@ -24,66 +30,69 @@
 #include "display.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
-#include "esp_memory_utils.h"
 #include "esp_timer.h"
 
 static const char *TAG = "render";
 
 #define CX 180.0f
 #define CY 180.0f
-#define HAND_R 170.0f
-#define HAND_COV 2.5f // half width (2 px) + 0.5 px anti-aliasing
-#define DYN_R 174.0f  // outside this radius only the static layer shows
-#define RING_R 128.0f
-#define DIGIT_BASELINE 214.0f
-#define COLON_BASELINE 210.0f
-#define STATUS_BASELINE 248.0f
-#define PULSE_CY 182.0f // the pulse swells the digits around this point
-#define DOTS_Y 288.0f
-// Lines above the digits: one line sits at TEXT_SINGLE; a task with a project
-// under it uses TEXT_TOP and TEXT_SECOND.
-#define TEXT_SINGLE 122
-#define TEXT_TOP 108
-#define TEXT_SECOND 128
-#define TEXT_ROWS_LO 90  // rows those lines can touch
-#define TEXT_ROWS_HI 135
-#define TASK_FADE 16 // px: a scrolling task fades out at the window edges
+#define W LCD_H_RES
+#define BAND_R0 155.0f // rim band: from here to the edge (stroke 25 at r 167.5)
+#define BACK_R0 153.0f // Pomodoro: black backing from here (stroke 28 at r 167), a hairline inside the band
+#define RIM_IN 152.0f  // pixels closer to the center than this are never part of the rim
+#define BASE_A 0.16f   // Pomodoro: the full ring under the arc, at 16% of the rim color
+#define RING_R 128.0f  // hold ring
+#define TIME_BASELINE 212
+#define TASK_BASELINE 123
+#define STATUS_BASELINE 238
+#define PILL_BASELINE 69
+#define PILL_TEXT_MAX 120 // px; a longer project name ends in an ellipsis
+#define PILL_PAD 32       // pill width = text + this
 #define MIC_CY ((float)RENDER_MIC_CY)
-#define TOP_CY RENDER_TOP_CY
-#define TOP_DISC_R 30.5f // black disc behind the badge, covering the hand and slice
-#define WIFI_CY 341      // Wi-Fi glyph center, in the rim at 6 o'clock
-#define WAVE_CY 248.0f
-#define RIM_R 155.0f // project rim: from here to the edge of the screen
+#define WAVE_CY 238.0f
+#define WIFI_CY 347 // Wi-Fi glyph anchor (its arcs' center is at 352.5, the middle of the band)
+#define TASK_X0 (180 - TASK_MAX_W / 2)
+#define TASK_FADE 20 // px: a scrolling task fades out at the window edges
 
-// Text layer region: covers the task name, the digits (with pulse swell and glow), status, dots and mic.
-#define TX0 10
-#define TY0 86
-#define TW 340
-#define TH 244
-
-static const float SLOT_X[4] = {80, 138, 222, 280};
+// Text layer region: task, time (with pulse swell and glow), status, waveform, mic.
+#define TX0 20
+#define TY0 88
+#define TW 320
+#define TH 232
+#define LIVE_ROW 140 // text rows from here down use the live color; above, the task color
 
 typedef struct {
-    uint8_t *px;                // TW x TH coverage
-    int16_t lo[TH], hi[TH];     // per-row written x range (layer coords), lo > hi = empty
+    uint8_t *px;            // TW x TH coverage
+    int16_t lo[TH], hi[TH]; // per-row written x range (layer coords), lo > hi = empty
 } layer_t;
 
-static uint16_t *s_bg; // static layer, byte-swapped RGB565
+// What the static backgrounds were built from.
+typedef struct {
+    int theme;
+    bool pomo, wifi_rim, has_project;
+    uint32_t rim_rgb, project_rgb;
+    char project[PROJECT_NAME_LEN];
+} bg_params_t;
+
+static uint16_t *s_bg_off, *s_bg_on; // byte-swapped RGB565, 360 x 360 each
+static uint8_t *s_tick;              // per pixel: 0, or 1 + index of the tick (0 = 12 o'clock) it belongs to
+static bg_params_t s_bgp;
+static bool s_bg_valid;
 static layer_t s_text, s_glow;
-static uint64_t s_bg_key = UINT64_MAX; // face/tick colors the static layer was built with
 static bool s_rot180;
 static scene_t s_last;
 static bool s_has_last;
 static render_stats_t s_stats;
-static uint8_t s_cov[LCD_H_RES]; // live coverage for the current row
 
 // Per-frame constants
 static struct {
-    bool empty, full, convex, glow_on, ring_on;
-    int top_a256, wifi_a256; // overlay strengths (0 = off)
-    uint16_t wifi_c;         // Wi-Fi glyph color (a tick color)
+    bool full, empty, convex, glow_on, ring_on;
     float bx, by, ring_end;
-    uint16_t live, dial, ring; // native RGB565
+    bool tick_on[12];
+    int wifi_a256;
+    bool wifi_on;
+    uint16_t wifi_c;                  // glyph color when off (a tick color)
+    uint16_t live, task_c, face, sub; // native RGB565
 } F;
 
 static inline uint16_t swap16(uint16_t v) { return (uint16_t)((v >> 8) | (v << 8)); }
@@ -95,18 +104,7 @@ static inline int ifloor(float v) { return (int)(v + 1024.0f) - 1024; } // floor
 static inline int imin(int a, int b) { return a < b ? a : b; }
 static inline int imax(int a, int b) { return a > b ? a : b; }
 
-// Fast blend of native RGB565 colors with a 0..256 alpha (5-bit precision).
-static inline uint16_t blend565(uint16_t bg, uint16_t fg, uint32_t a)
-{
-    const uint32_t alpha = (a + 4) >> 3;
-    uint32_t b = (bg | ((uint32_t)bg << 16)) & 0x07E0F81Fu;
-    const uint32_t f = (fg | ((uint32_t)fg << 16)) & 0x07E0F81Fu;
-    b += ((f - b) * alpha) >> 5;
-    b &= 0x07E0F81Fu;
-    return (uint16_t)(b | (b >> 16));
-}
-
-// Per-channel blend with a 0..256 alpha (8-bit precision), for text edges.
+// Per-channel blend of native RGB565 colors with a 0..256 alpha.
 static inline uint16_t mix565(uint16_t a, uint16_t b, int t)
 {
     int ar = a >> 11, ag = (a >> 5) & 63, ab = a & 31;
@@ -117,61 +115,202 @@ static inline uint16_t mix565(uint16_t a, uint16_t b, int t)
     return (uint16_t)(ar << 11 | ag << 5 | ab);
 }
 
+static inline uint16_t mixf(uint16_t a, uint16_t b, float t) { return mix565(a, b, (int)(t * 256 + 0.5f)); }
+
 void render_take_stats(render_stats_t *out)
 {
     *out = s_stats;
     memset(&s_stats, 0, sizeof s_stats);
 }
 
-// ---- Static layer (rebuilt only when the color profile changes) -----------
+// ---- Text layout ------------------------------------------------------------------
 
-static void build_bg(int pal, bool rim_on, uint32_t rim_rgb, bool no_six)
+// Decode UTF-8 into font indices. Accented Latin letters lose their accents,
+// typographic quotes and dashes become ASCII, anything else (emoji...) is dropped.
+static int text_glyphs(const char *s, uint8_t *out, int cap)
 {
-    const palette_t *p = &PALETTES[pal];
-    const uint16_t dial = rgb_to_565(p->dial), rim = rgb_to_565(rim_rgb);
-    // On a project rim the ticks become dark notches.
-    const uint16_t tick = rim_on ? blend565(rim, 0, 108) : rgb_to_565(p->tick);
-    const uint16_t major = rim_on ? blend565(rim, 0, 159) : rgb_to_565(p->major);
+    static const char LATIN1[] = "AAAAAAACEEEEIIIIDNOOOOOxOUUUUYTsaaaaaaaceeeeiiiidnooooo/ouuuuyty"; // U+00C0..U+00FF
+    int n = 0;
+    const uint8_t *p = (const uint8_t *)s;
+    while (*p && n < cap) {
+        uint32_t cp = *p++;
+        int extra = cp >= 0xF0 ? 3 : cp >= 0xE0 ? 2 : cp >= 0xC0 ? 1 : 0;
+        if (extra) cp &= 0x3F >> extra;
+        for (; extra > 0 && (*p & 0xC0) == 0x80; extra--) cp = cp << 6 | (*p++ & 0x3F);
+        int ch = -1;
+        if (cp >= 32 && cp < 127) ch = (int)cp;
+        else if (cp == 0xA0 || cp == '\t' || cp == '\n') ch = ' ';
+        else if (cp >= 0xC0 && cp <= 0xFF) ch = LATIN1[cp - 0xC0];
+        else if (cp == 0x2018 || cp == 0x2019 || cp == 0x201A || cp == 0x2032) ch = '\'';
+        else if (cp == 0x201C || cp == 0x201D || cp == 0x201E || cp == 0x2033) ch = '"';
+        else if (cp == 0x2013 || cp == 0x2014 || cp == 0x2212) ch = '-';
+        else if (cp == 0x2026) {
+            out[n++] = FONT_ELLIPSIS;
+            continue;
+        }
+        if (ch >= 0) out[n++] = (uint8_t)(ch - FONT_FIRST);
+    }
+    return n;
+}
+
+// Glyphs for `text` in `font`, cut with an ellipsis to fit max16 (1/16 px; 0 = no limit).
+// Returns the count and the width.
+static int layout_text(const char *text, const glyph_t *font, uint8_t *g, int max16, int *w16_out)
+{
+    int n = text_glyphs(text, g, SCENE_TASK_LEN - 1);
+    int w16 = 0;
+    for (int i = 0; i < n; i++) w16 += font[g[i]].adv16;
+    if (max16 && w16 > max16) { // cut at a glyph boundary, drop trailing spaces, add an ellipsis
+        const int ell = font[FONT_ELLIPSIS].adv16;
+        while (n > 0 && (w16 + ell > max16 || g[n - 1] == ' ' - FONT_FIRST)) w16 -= font[g[--n]].adv16;
+        g[n++] = FONT_ELLIPSIS;
+        w16 += ell;
+    }
+    *w16_out = w16;
+    return n;
+}
+
+int render_task_width(const char *task)
+{
+    uint8_t g[SCENE_TASK_LEN];
+    int w16;
+    layout_text(task, TASK_FONT, g, 0, &w16);
+    return (w16 + 15) / 16;
+}
+
+int render_pill_width(const char *name)
+{
+    uint8_t g[SCENE_TASK_LEN];
+    int w16;
+    layout_text(name, PILL_FONT, g, PILL_TEXT_MAX * 16, &w16);
+    return (w16 + 15) / 16 + PILL_PAD;
+}
+
+static inline int mask_px(const mask_t *m, int x, int y)
+{
+    return ((unsigned)x >= m->w || (unsigned)y >= m->h) ? 0 : m->data[y * m->w + x];
+}
+
+// ---- Static backgrounds -------------------------------------------------------------
+
+// The project pill (stadium, y 50..78) with its name, drawn into the "off" background.
+// Returns the pill's x range.
+static void build_pill(const bg_params_t *bp, int *px0, int *px1)
+{
+    const theme_t *th = &THEMES[bp->theme];
+    const char *name = bp->has_project ? bp->project : "No project";
+    uint8_t g[SCENE_TASK_LEN];
+    int w16;
+    const int n = layout_text(name, PILL_FONT, g, PILL_TEXT_MAX * 16, &w16);
+    const float pw = w16 / 16.0f + PILL_PAD, r = RENDER_PILL_H / 2.0f;
+    const float x0 = CX - pw / 2, x1 = CX + pw / 2, ymid = RENDER_PILL_Y0 + r;
+    const uint16_t fill = rgb_to_565(bp->project_rgb), sub = rgb_to_565(th->sub);
+    *px0 = ifloor(x0) - 1;
+    *px1 = ifloor(x1) + 2;
+    for (int y = RENDER_PILL_Y0 - 1; y <= RENDER_PILL_Y0 + RENDER_PILL_H + 1; y++) {
+        for (int x = *px0; x < *px1; x++) {
+            const float fx = x + 0.5f, fy = y + 0.5f;
+            const float cx = fx < x0 + r ? x0 + r : (fx > x1 - r ? x1 - r : fx);
+            const float d = sqrtf((fx - cx) * (fx - cx) + (fy - ymid) * (fy - ymid)) - r; // signed distance
+            uint16_t c = swap16(s_bg_off[y * W + x]);
+            if (bp->has_project) c = mixf(c, fill, clamp01(0.5f - d));
+            else c = mixf(c, sub, clamp01(1.25f - absf(d))); // 1.5 px outline on the edge
+            s_bg_off[y * W + x] = swap16(c);
+        }
+    }
+    const uint16_t ink = bp->has_project ? rgb_to_565(readable_on(bp->project_rgb)) : sub;
+    int pen16 = (int)(CX * 16) - w16 / 2;
+    for (int i = 0; i < n; i++) {
+        const glyph_t *gl = &PILL_FONT[g[i]];
+        const int lx = ((pen16 + 8) >> 4) + gl->m.ox, ty = PILL_BASELINE + gl->m.oy;
+        for (int my = 0; my < gl->m.h; my++) {
+            for (int mx = 0; mx < gl->m.w; mx++) {
+                const int v = gl->m.data[my * gl->m.w + mx];
+                if (!v) continue;
+                uint16_t *p = &s_bg_off[(ty + my) * W + lx + mx];
+                *p = swap16(mix565(swap16(*p), ink, v + (v >> 7)));
+            }
+        }
+        pen16 += gl->adv16;
+    }
+}
+
+static void build_bg(const bg_params_t *bp)
+{
+    const int64_t t0 = esp_timer_get_time();
+    const theme_t *th = &THEMES[bp->theme];
+    const theme_t *rt = bp->pomo ? &THEMES[THEME_MONO] : th; // Pomodoro's rim looks the same in both profiles
+    const uint16_t face = rgb_to_565(th->face), rim = rgb_to_565(bp->rim_rgb);
+    const uint16_t black = 0, base = mixf(0, rim, BASE_A);
+    const uint16_t tick = rgb_to_565(rt->tick), major = rgb_to_565(rt->major);
     float ux[12], uy[12];
     for (int k = 0; k < 12; k++) {
         ux[k] = sinf(k * (float)M_PI / 6);
         uy[k] = -cosf(k * (float)M_PI / 6);
     }
+    const uint16_t face_sw = swap16(face);
     for (int y = 0; y < LCD_V_RES; y++) {
         const float dy = y + 0.5f - CY;
-        for (int x = 0; x < LCD_H_RES; x++) {
+        for (int x = 0; x < W; x++) {
+            const int i = y * W + x;
             const float dx = x + 0.5f - CX;
             const float r2 = dx * dx + dy * dy;
-            uint16_t c = dial;
-            if (rim_on && r2 > (RIM_R - 0.5f) * (RIM_R - 0.5f)) {
-                const float band = clamp01(sqrtf(r2) - (RIM_R - 0.5f)); // anti-aliased inner edge
-                c = band >= 1 ? rim : blend565(dial, rim, (uint32_t)(band * 256));
+            s_tick[i] = 0;
+            if (r2 < RIM_IN * RIM_IN) {
+                s_bg_off[i] = s_bg_on[i] = face_sw;
+                continue;
             }
-            if (r2 > 154.0f * 154.0f && r2 < 172.0f * 172.0f) {
+            const float r = sqrtf(r2);
+            uint16_t off = face, on = face;
+            if (bp->pomo) { // black backing under the band
+                const float back = clamp01(r - (BACK_R0 - 0.5f));
+                off = on = mixf(face, black, back);
+            }
+            const float band = clamp01(r - (BAND_R0 - 0.5f));
+            if (bp->pomo) off = mixf(off, base, band);
+            on = mixf(on, rim, band);
+            if (r > 154.0f && r < 172.0f) {
                 float phi = atan2f(dx, -dy);
                 if (phi < 0) phi += 2 * (float)M_PI;
                 const int k = (int)lroundf(phi * (6 / (float)M_PI)) % 12;
-                if (no_six && k == 6) {
-                    s_bg[y * LCD_H_RES + x] = swap16(c);
-                    continue;
+                if (!(bp->wifi_rim && k == 6)) { // the Wi-Fi glyph replaces the 6 o'clock tick
+                    float t = dx * ux[k] + dy * uy[k];
+                    t = t < 158 ? 158 : (t > 168 ? 168 : t);
+                    const float px = dx - t * ux[k], py = dy - t * uy[k];
+                    const bool is_major = k % 3 == 0;
+                    const float cov = clamp01((is_major ? 1.5f : 1.0f) + 0.5f - sqrtf(px * px + py * py));
+                    if (cov > 0) {
+                        const float notch = (is_major ? 0.62f : 0.42f) * cov; // rgba(0,0,0,.42 / .62) on the band
+                        // The 12 o'clock tick straddles the arc's start: while the arc is partial, its left
+                        // half is a notch over the uncovered band (the renderer mirrors the right half for a full ring).
+                        on = mixf(k == 0 && x < 180 ? off : on, black, notch);
+                        off = mixf(off, is_major ? major : tick, cov);
+                        s_tick[i] = (uint8_t)(k + 1);
+                    }
                 }
-                float t = dx * ux[k] + dy * uy[k];
-                t = t < 158 ? 158 : (t > 168 ? 168 : t);
-                const float px = dx - t * ux[k], py = dy - t * uy[k];
-                const bool is_major = k % 3 == 0;
-                const float cov = clamp01((is_major ? 1.5f : 1.0f) + 0.5f - sqrtf(px * px + py * py));
-                if (cov > 0) c = blend565(c, is_major ? major : tick, (uint32_t)(cov * 256));
             }
-            s_bg[y * LCD_H_RES + x] = swap16(c);
+            s_bg_off[i] = swap16(off);
+            s_bg_on[i] = swap16(on);
         }
     }
+    int px0, px1;
+    build_pill(bp, &px0, &px1);
+    for (int y = RENDER_PILL_Y0 - 1; y <= RENDER_PILL_Y0 + RENDER_PILL_H + 1; y++) { // (inside the rim: same in both)
+        memcpy(s_bg_on + y * W + px0, s_bg_off + y * W + px0, (px1 - px0) * sizeof(uint16_t));
+    }
+    ESP_LOGI(TAG, "background built in %lld ms", (esp_timer_get_time() - t0) / 1000);
 }
 
-static uint64_t bg_key(const scene_t *s)
+static void scene_bg_params(const scene_t *s, bg_params_t *bp)
 {
-    const palette_t *p = &PALETTES[s->palette];
-    const uint64_t rim = s->rim_on ? (s->rim_rgb | 0x1000000u) : 0;
-    return rim << 39 ^ (uint64_t)p->dial << 24 ^ (uint64_t)p->tick << 12 ^ p->major ^ (uint64_t)s->wifi_rim << 63;
+    memset(bp, 0, sizeof *bp);
+    bp->theme = s->theme;
+    bp->pomo = s->pomo;
+    bp->wifi_rim = s->wifi_rim;
+    bp->has_project = s->has_project;
+    bp->rim_rgb = s->rim_rgb;
+    bp->project_rgb = s->has_project ? s->project_rgb : 0;
+    if (s->has_project) strlcpy(bp->project, s->project, sizeof bp->project);
 }
 
 // ---- Text layers ------------------------------------------------------------
@@ -192,16 +331,11 @@ static inline void layer_mark(layer_t *L, int Y, int X0, int X1) // absolute coo
     if (X1 - 1 - TX0 > L->hi[r]) L->hi[r] = (int16_t)(X1 - 1 - TX0);
 }
 
-static inline int mask_px(const mask_t *m, int x, int y)
-{
-    return ((unsigned)x >= m->w || (unsigned)y >= m->h) ? 0 : m->data[y * m->w + x];
-}
-
 // Draw a mask anchored at (ax, ay), scaled by sc around (scx, scy); overlapping
 // coverage keeps the max. sc == 1 is a straight copy; otherwise bilinear.
 static void blit(layer_t *L, const mask_t *m, float ax, float ay, float sc, float scx, float scy, float alpha)
 {
-    if (alpha <= 0.004f) return;
+    if (alpha <= 0.004f || !m->w) return;
     const int a256 = (int)(alpha * 256 + 0.5f);
     const float left = ax + m->ox, top = ay + m->oy;
 
@@ -251,85 +385,15 @@ static void blit(layer_t *L, const mask_t *m, float ax, float ay, float sc, floa
     }
 }
 
-static void dot(layer_t *L, float cx, float cy, float r, float alpha)
+// The time, centered: "MM:SS" at 88 px or "HH:MM:SS" at 62 px, tabular figures.
+static void draw_time(layer_t *L, const glyph_t *font, const char *t, float sc, float alpha)
 {
-    const int X0 = (int)(cx - r - 1), X1 = (int)(cx + r + 2);
-    for (int Y = (int)(cy - r - 1); Y <= (int)(cy + r + 1); Y++) {
-        for (int X = X0; X < X1; X++) {
-            const float dx = X + 0.5f - cx, dy = Y + 0.5f - cy;
-            const int val = (int)(clamp01(r + 0.5f - sqrtf(dx * dx + dy * dy)) * alpha * 255 + 0.5f);
-            uint8_t *p = L->px + (Y - TY0) * TW + (X - TX0);
-            if (val > *p) *p = (uint8_t)val;
-        }
-        layer_mark(L, Y, X0, X1);
-    }
-}
-
-// ---- Task name ---------------------------------------------------------------
-
-// Decode UTF-8 into task-font indices. Accented Latin letters lose their accents,
-// typographic quotes and dashes become ASCII, anything else (emoji...) is dropped.
-static int task_glyphs(const char *s, uint8_t *out, int cap)
-{
-    static const char LATIN1[] = "AAAAAAACEEEEIIIIDNOOOOOxOUUUUYTsaaaaaaaceeeeiiiidnooooo/ouuuuyty"; // U+00C0..U+00FF
-    int n = 0;
-    const uint8_t *p = (const uint8_t *)s;
-    while (*p && n < cap) {
-        uint32_t cp = *p++;
-        int extra = cp >= 0xF0 ? 3 : cp >= 0xE0 ? 2 : cp >= 0xC0 ? 1 : 0;
-        if (extra) cp &= 0x3F >> extra;
-        for (; extra > 0 && (*p & 0xC0) == 0x80; extra--) cp = cp << 6 | (*p++ & 0x3F);
-        int ch = -1;
-        if (cp >= 32 && cp < 127) ch = (int)cp;
-        else if (cp == 0xA0 || cp == '\t' || cp == '\n') ch = ' ';
-        else if (cp >= 0xC0 && cp <= 0xFF) ch = LATIN1[cp - 0xC0];
-        else if (cp == 0x2018 || cp == 0x2019 || cp == 0x201A || cp == 0x2032) ch = '\'';
-        else if (cp == 0x201C || cp == 0x201D || cp == 0x201E || cp == 0x2033) ch = '"';
-        else if (cp == 0x2013 || cp == 0x2014 || cp == 0x2212) ch = '-';
-        else if (cp == 0x2026) {
-            out[n++] = TASK_FONT_ELLIPSIS;
-            continue;
-        }
-        if (ch >= 0) out[n++] = (uint8_t)(ch - TASK_FONT_FIRST);
-    }
-    return n;
-}
-
-// Glyphs for `text` in `font`, cut with an ellipsis to fit max16 (1/16 px; 0 = no limit).
-// Returns the count and the width.
-static int layout_text(const char *text, const glyph_t *font, uint8_t *g, int max16, int *w16_out)
-{
-    int n = task_glyphs(text, g, SCENE_TASK_LEN - 1);
     int w16 = 0;
-    for (int i = 0; i < n; i++) w16 += font[g[i]].adv16;
-    if (max16 && w16 > max16) { // cut at a glyph boundary, drop trailing spaces, add an ellipsis
-        const int ell = font[TASK_FONT_ELLIPSIS].adv16;
-        while (n > 0 && (w16 + ell > max16 || g[n - 1] == ' ' - TASK_FONT_FIRST)) w16 -= font[g[--n]].adv16;
-        g[n++] = TASK_FONT_ELLIPSIS;
-        w16 += ell;
-    }
-    *w16_out = w16;
-    return n;
-}
-
-int render_task_width(const char *task)
-{
-    uint8_t g[SCENE_TASK_LEN];
-    int w16;
-    layout_text(task, TASK_FONT, g, 0, &w16);
-    return (w16 + 15) / 16;
-}
-
-// One line of text centered on the screen (cut with an ellipsis if too wide).
-static void draw_line(layer_t *L, const char *text, const glyph_t *font, int baseline, float alpha)
-{
-    uint8_t g[SCENE_TASK_LEN];
-    int w16;
-    const int n = layout_text(text, font, g, TASK_MAX_W * 16, &w16);
+    for (const char *p = t; *p; p++) w16 += font[*p == ':' ? TIME_COLON : *p - '0'].adv16;
     int pen16 = (int)(CX * 16) - w16 / 2;
-    for (int i = 0; i < n; i++) {
-        const glyph_t *gl = &font[g[i]];
-        if (gl->m.w) blit(L, &gl->m, (float)((pen16 + 8) >> 4), (float)baseline, 1.0f, CX, PULSE_CY, alpha);
+    for (const char *p = t; *p; p++) {
+        const glyph_t *gl = &font[*p == ':' ? TIME_COLON : *p - '0'];
+        blit(L, &gl->m, pen16 / 16.0f, TIME_BASELINE, sc, CX, CY, alpha);
         pen16 += gl->adv16;
     }
 }
@@ -355,19 +419,28 @@ static void blit_window(layer_t *L, const mask_t *m, int pen_x, int baseline, in
     }
 }
 
-// A task too wide for the screen scrolls through a window, in a loop with a gap.
-static void draw_marquee(layer_t *L, const char *text, int baseline, float alpha, int scroll)
+// The task: centered if it fits; otherwise it scrolls through the window in a loop, with a gap.
+static void draw_task(layer_t *L, const char *text, float alpha, int scroll)
 {
     uint8_t g[SCENE_TASK_LEN];
     int w16;
     const int n = layout_text(text, TASK_FONT, g, 0, &w16);
-    const int wx0 = (int)CX - TASK_MAX_W / 2, wx1 = wx0 + TASK_MAX_W;
+    if (scroll < 0) {
+        int pen16 = (int)(CX * 16) - w16 / 2;
+        for (int i = 0; i < n; i++) {
+            const glyph_t *gl = &TASK_FONT[g[i]];
+            blit(L, &gl->m, (float)((pen16 + 8) >> 4), TASK_BASELINE, 1.0f, CX, CY, alpha);
+            pen16 += gl->adv16;
+        }
+        return;
+    }
+    const int wx0 = TASK_X0, wx1 = TASK_X0 + TASK_MAX_W;
     const int a256 = (int)(alpha * 256 + 0.5f);
     for (int copy = 0; copy < 2; copy++) {
         int pen16 = (wx0 - scroll + copy * ((w16 + 15) / 16 + TASK_SCROLL_GAP)) * 16;
         for (int i = 0; i < n; i++) {
             const glyph_t *gl = &TASK_FONT[g[i]];
-            if (gl->m.w) blit_window(L, &gl->m, (pen16 + 8) >> 4, baseline, a256, wx0, wx1);
+            if (gl->m.w) blit_window(L, &gl->m, (pen16 + 8) >> 4, TASK_BASELINE, a256, wx0, wx1);
             pen16 += gl->adv16;
         }
     }
@@ -395,232 +468,154 @@ static void bar(layer_t *L, float cx, float cy, int h)
 static void build_text(const scene_t *s)
 {
     layer_clear(&s_text);
-    for (int i = 0; i < 4; i++) {
-        blit(&s_text, &GLYPH_DIGITS[s->digits[i] - '0'], SLOT_X[i], DIGIT_BASELINE, s->digit_scale, CX, PULSE_CY,
-             s->digit_alpha);
-    }
-    blit(&s_text, &GLYPH_COLON, CX, COLON_BASELINE, s->digit_scale, CX, PULSE_CY, s->digit_alpha * s->colon_alpha);
-    if (s->task[0]) {
-        const int base = s->project[0] ? TEXT_TOP : TEXT_SINGLE;
-        if (s->task_scroll >= 0) draw_marquee(&s_text, s->task, base, s->task_alpha, s->task_scroll);
-        else draw_line(&s_text, s->task, TASK_FONT, base, s->task_alpha);
-    }
-    if (s->project[0]) draw_line(&s_text, s->project, SMALL_FONT, s->task[0] ? TEXT_SECOND : TEXT_SINGLE, s->project_alpha);
+    const bool small = strlen(s->time) > 5;
+    draw_time(&s_text, small ? TIME_SMALL_FONT : TIME_FONT, s->time, s->time_scale, s->time_alpha);
+    if (s->task[0]) draw_task(&s_text, s->task, s->task_alpha, s->task_scroll);
     if (s->status >= 0 && s->status < STR_COUNT) {
-        blit(&s_text, &STRINGS[s->status], CX, STATUS_BASELINE, 1.0f, CX, PULSE_CY, s->status_alpha);
+        blit(&s_text, &STRINGS[s->status], CX, STATUS_BASELINE, 1.0f, CX, CY, s->status_alpha);
     }
-    if (s->mic_ring_alpha > 0.004f) blit(&s_text, &MIC_RING, CX, MIC_CY, 1.0f, CX, PULSE_CY, s->mic_ring_alpha);
-    if (s->mic_alpha > 0.004f) blit(&s_text, &MIC_ICON, CX, MIC_CY, 1.0f, CX, PULSE_CY, s->mic_alpha);
     if (s->wave_on) { // 21 rounded bars, 4 px wide, 7 px apart
         for (int i = 0; i < 21; i++) bar(&s_text, CX + (i - 10) * 7, WAVE_CY, s->wave[i]);
     }
-    if (s->dots_alpha > 0.004f) {
-        for (int i = 0; i < PALETTE_COUNT; i++) {
-            dot(&s_text, CX + (i - (PALETTE_COUNT - 1) / 2.0f) * 14, DOTS_Y, 3.5f,
-                s->dots_alpha * (i == s->palette ? 1.0f : 0.35f));
-        }
-    }
-    // The glow is blurred, so it is drawn at rest size; only its strength pulses.
+    if (s->mic_ring_alpha > 0.004f) blit(&s_text, &MIC_RING, CX, MIC_CY, 1.0f, CX, CY, s->mic_ring_alpha);
+    if (s->mic_alpha > 0.004f) blit(&s_text, &MIC_ICON, CX, MIC_CY, 1.0f, CX, CY, s->mic_alpha);
+    // The glow is blurred, so it is drawn at rest size; only its strength pulses. (Only MM:SS pulses.)
     layer_clear(&s_glow);
-    if (s->glow > 0.004f) {
-        const float g = s->glow * s->digit_alpha;
-        for (int i = 0; i < 4; i++) {
-            blit(&s_glow, &GLOW_DIGITS[s->digits[i] - '0'], SLOT_X[i], DIGIT_BASELINE, 1.0f, CX, PULSE_CY, g);
-        }
-        blit(&s_glow, &GLOW_COLON, CX, COLON_BASELINE, 1.0f, CX, PULSE_CY, g);
-    }
+    if (s->glow > 0.004f && !small) draw_time(&s_glow, TIME_GLOW, s->time, 1.0f, s->glow * s->time_alpha);
 }
 
 // ---- Dirty rows -------------------------------------------------------------
 
+// Dirty rows are tracked per 24-row band (a bit per band, in scene rows), so changes at the
+// top, middle and bottom of the screen don't merge into one full-screen redraw.
+#define NBANDS (LCD_V_RES / DISPLAY_BAND_ROWS)
+#define ALL_BANDS ((1u << NBANDS) - 1)
+
+static void add_rows(uint32_t *mask, int lo, int hi) // rows [lo, hi)
+{
+    lo = imax(0, lo);
+    hi = imin(LCD_V_RES, hi);
+    for (int b = lo / DISPLAY_BAND_ROWS; hi > lo && b <= (hi - 1) / DISPLAY_BAND_ROWS; b++) *mask |= 1u << b;
+}
+
 // Rows covered by the arc between angles a1..a2 (degrees clockwise from 12)
-// out to radius r, including the center.
-static void arc_rows(float a1, float a2, float r, int *lo, int *hi)
+// between radii r0 and r1 (r0 = 0: including the center).
+static void sector_rows(float a1, float a2, float r0, float r1, uint32_t *mask)
 {
     if (a1 > a2) {
         const float t = a1;
         a1 = a2;
         a2 = t;
     }
-    float ymin = CY, ymax = CY;
-    const float ys[2] = {CY - r * cosf(a1 * (float)M_PI / 180), CY - r * cosf(a2 * (float)M_PI / 180)};
+    float ymin = 1e9f, ymax = -1e9f;
+    const float as[2] = {a1, a2}, rs[2] = {r0, r1};
     for (int i = 0; i < 2; i++) {
-        ymin = minf(ymin, ys[i]);
-        ymax = maxf(ymax, ys[i]);
+        const float c = cosf(as[i] * (float)M_PI / 180);
+        for (int j = 0; j < 2; j++) {
+            const float y = CY - rs[j] * c;
+            ymin = minf(ymin, y);
+            ymax = maxf(ymax, y);
+        }
     }
-    if (a1 <= 0.0f || a2 >= 360.0f) ymin = CY - r; // passes 12 o'clock
-    if (a1 < 180.0f && a2 > 180.0f) ymax = CY + r; // passes 6 o'clock
-    *lo = ifloor(ymin) - 4;
-    *hi = ifloor(ymax) + 5;
+    if (a1 <= 0.0f || a2 >= 360.0f) ymin = CY - r1; // passes 12 o'clock
+    if (a1 < 180.0f && a2 > 180.0f) ymax = CY + r1; // passes 6 o'clock
+    add_rows(mask, ifloor(ymin) - 3, ifloor(ymax) + 4);
 }
 
-static void add_rows(int *ya, int *yb, int lo, int hi)
-{
-    *ya = imin(*ya, lo);
-    *yb = imax(*yb, hi);
-}
-
-static void dirty_rows(const scene_t *s, int *ya, int *yb)
+static uint32_t dirty_bands(const scene_t *s)
 {
     const scene_t *p = &s_last;
-    *ya = LCD_V_RES;
-    *yb = 0;
-    if (!s_has_last || s->palette != p->palette || rgb_to_565(s->live_rgb) != rgb_to_565(p->live_rgb) ||
-        s->rim_on != p->rim_on || s->rim_rgb != p->rim_rgb) {
-        *ya = 0;
-        *yb = LCD_V_RES;
-        return;
+    uint32_t m = 0;
+    if (!s_has_last || s->theme != p->theme || s->pomo != p->pomo || s->rim_rgb != p->rim_rgb ||
+        s->has_project != p->has_project || s->project_rgb != p->project_rgb || strcmp(s->project, p->project) ||
+        s->wifi_rim != p->wifi_rim) {
+        return ALL_BANDS;
     }
-    if (s->slice_deg != p->slice_deg) {
-        int lo, hi;
-        arc_rows(p->slice_deg, s->slice_deg, DYN_R, &lo, &hi);
-        add_rows(ya, yb, lo, hi);
+    if (s->rim_frac != p->rim_frac) {
+        sector_rows(minf(s->rim_frac, p->rim_frac) * 360 - 2, maxf(s->rim_frac, p->rim_frac) * 360 + 2, RIM_IN - 2,
+                    182, &m);
+        const bool on_now = s->rim_frac >= 0.9995f || s->rim_frac > 0.5f;
+        const bool on_before = p->rim_frac >= 0.9995f || p->rim_frac > 0.5f;
+        if (on_now != on_before) add_rows(&m, WIFI_CY - 13, WIFI_CY + 13);
     }
     if (s->hold_progress != p->hold_progress) {
-        int lo, hi;
-        arc_rows(p->hold_progress * 360, s->hold_progress * 360, RING_R + 3, &lo, &hi);
-        add_rows(ya, yb, lo, hi);
+        sector_rows(p->hold_progress * 360, s->hold_progress * 360, 0, RING_R + 3, &m);
     }
-    if (memcmp(s->digits, p->digits, 4) || s->digit_alpha != p->digit_alpha || s->colon_alpha != p->colon_alpha ||
-        s->digit_scale != p->digit_scale || s->glow != p->glow) {
-        add_rows(ya, yb, 104, 252);
+    if (rgb_to_565(s->live_rgb) != rgb_to_565(p->live_rgb)) add_rows(&m, 118, TY0 + TH);
+    if (strcmp(s->time, p->time) || s->time_alpha != p->time_alpha || s->time_scale != p->time_scale ||
+        s->glow != p->glow) {
+        add_rows(&m, 118, 242);
     }
-    if (s->status != p->status || s->status_alpha != p->status_alpha) add_rows(ya, yb, 232, 258);
-    if (s->mic_alpha != p->mic_alpha || s->mic_ring_alpha != p->mic_ring_alpha) add_rows(ya, yb, 262, 330);
-    if (s->wave_on != p->wave_on || memcmp(s->wave, p->wave, sizeof s->wave)) add_rows(ya, yb, 232, 264);
-    if (s->top_alpha != p->top_alpha) add_rows(ya, yb, TOP_CY - 36, TOP_CY + 37);
-    if (s->wifi_alpha != p->wifi_alpha) add_rows(ya, yb, WIFI_CY - 13, WIFI_CY + 13);
-    if (s->task_alpha != p->task_alpha || s->task_scroll != p->task_scroll || strcmp(s->task, p->task) ||
-        s->project_alpha != p->project_alpha || strcmp(s->project, p->project)) {
-        add_rows(ya, yb, TEXT_ROWS_LO, TEXT_ROWS_HI);
+    if (strcmp(s->task, p->task) || s->task_untitled != p->task_untitled || s->task_alpha != p->task_alpha ||
+        s->task_scroll != p->task_scroll) {
+        add_rows(&m, TY0, LIVE_ROW);
     }
-    if (s->dots_alpha != p->dots_alpha) add_rows(ya, yb, 280, 298);
-    *ya = imax(0, *ya);
-    *yb = imin(LCD_V_RES, *yb);
+    if (s->status != p->status || s->status_alpha != p->status_alpha) add_rows(&m, 224, 248);
+    if (s->wave_on != p->wave_on || memcmp(s->wave, p->wave, sizeof s->wave)) add_rows(&m, 224, 252);
+    if (s->mic_alpha != p->mic_alpha || s->mic_ring_alpha != p->mic_ring_alpha) add_rows(&m, 244, TY0 + TH);
+    if (s->wifi_alpha != p->wifi_alpha) add_rows(&m, WIFI_CY - 13, WIFI_CY + 13);
+    return m;
 }
 
 // ---- Row passes -------------------------------------------------------------
 
-// Live-color coverage (slice with its rim, plus both hands) for one row.
-static void row_coverage(int y, int xa, int xb)
+// Rim pixels [xa, xb) of row y: the "on" background inside the arc, "off" outside.
+static void rim_span(uint16_t *o, const uint16_t *off, const uint16_t *on, int y, int xa, int xb)
 {
-    uint8_t *cov = s_cov;
-    memset(cov + xa, 0, xb - xa);
-    const float dy = y + 0.5f - CY;
-
-    if (!F.empty) {
-        const float out2 = 150.5f * 150.5f - dy * dy;
-        if (out2 > 0) {
-            const float out_half = sqrtf(out2);
-            const int xs0 = imax(xa, ifloor(CX - out_half)), xs1 = imin(xb, ifloor(CX + out_half) + 1);
-            const int mid = 180; // the 12 o'clock edge lies between columns 179 and 180
-            if (F.full) {
-                memset(cov + xs0, 255, xs1 - xs0);
-            } else {
-                // Before the moving hand: raw = signed distance to its line, linear along x.
-                const float by = F.by;
-                const int c0 = F.convex ? imax(xs0, mid) : xs0;
-                const int c1 = F.convex ? xs1 : imin(xs1, mid);
-                float raw = (c0 + 0.5f - CX) * by - dy * F.bx + 0.5f;
-                for (int x = c0; x < c1; x++, raw += by) {
-                    const int v = (int)(raw * 255.0f);
-                    cov[x] = (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v));
-                }
-                if (!F.convex && xs1 > mid) memset(cov + imax(mid, xs0), 255, xs1 - imax(mid, xs0));
-            }
-            // Rim anti-aliasing: only the outermost pixels on each side.
-            const float in2 = 149.5f * 149.5f - dy * dy;
-            const float in_half = in2 > 0 ? sqrtf(in2) : 0.0f;
-            const int xi0 = imax(xs0, ifloor(CX - in_half) + 1), xi1 = imin(xs1, ifloor(CX + in_half));
-            for (int x = xs0; x < xs1; x++) {
-                if (x == xi0 && xi1 > xi0) {
-                    x = xi1 - 1;
-                    continue;
-                }
-                if (!cov[x]) continue;
-                const float dx = x + 0.5f - CX;
-                const float cr = clamp01(150.5f - sqrtf(dx * dx + dy * dy));
-                cov[x] = (uint8_t)(cov[x] * cr + 0.5f);
-            }
-        }
+    if (xb <= xa) return;
+    if (F.empty) {
+        memcpy(o + xa, off + xa, (xb - xa) * sizeof(uint16_t));
+        return;
     }
-
-    // 12 o'clock hand: columns 177..182, from the center up to radius 170.
-    if (dy > -HAND_R - HAND_COV && dy < HAND_COV) {
-        for (int x = 177; x <= 182; x++) {
-            const float dx = x + 0.5f - CX;
-            float d = absf(dx);
-            if (dy > 0) d = sqrtf(dx * dx + dy * dy);
-            else if (dy < -HAND_R) d = sqrtf(dx * dx + (dy + HAND_R) * (dy + HAND_R));
-            const int h = (int)(clamp01(HAND_COV - d) * 255.0f);
-            if (h) cov[x] = (uint8_t)(255 - ((255 - cov[x]) * (255 - h) + 127) / 255);
-        }
-    }
-
-    // Moving hand: pixels within 2.5 px of its line and along its length.
-    {
-        const float bx = F.bx, by = F.by;
-        const float raw0 = (xa + 0.5f - CX) * by - dy * bx; // at x = xa
-        const float tb0 = (xa + 0.5f - CX) * bx + dy * by;
-        float lo = 0, hi = (float)(xb - xa); // offsets from xa
-        if (absf(by) > 1e-4f) {
-            const float e0 = (-HAND_COV - raw0) / by, e1 = (HAND_COV - raw0) / by;
-            lo = maxf(lo, minf(e0, e1));
-            hi = minf(hi, maxf(e0, e1));
-        } else if (absf(raw0) >= HAND_COV) {
-            hi = -1;
-        }
-        if (absf(bx) > 1e-4f) {
-            const float e0 = (-HAND_COV - tb0) / bx, e1 = (HAND_R + HAND_COV - tb0) / bx;
-            lo = maxf(lo, minf(e0, e1));
-            hi = minf(hi, maxf(e0, e1));
-        } else if (tb0 <= -HAND_COV || tb0 >= HAND_R + HAND_COV) {
-            hi = -1;
-        }
-        const int x0 = xa + imax(0, ifloor(lo)), x1 = imin(xb, xa + ifloor(hi) + 2);
-        for (int x = x0; x < x1; x++) {
-            const float dx = x + 0.5f - CX;
-            const float raw = dx * by - dy * bx, tb = dx * bx + dy * by;
-            float d = absf(raw);
-            if (tb < 0) d = sqrtf(dx * dx + dy * dy);
-            else if (tb > HAND_R) {
-                const float px = dx - HAND_R * bx, py = dy - HAND_R * by;
-                d = sqrtf(px * px + py * py);
+    const uint8_t *tk = s_tick + y * W;
+    if (F.full) {
+        memcpy(o + xa, on + xa, (xb - xa) * sizeof(uint16_t));
+        if (y < 30) { // the 12 o'clock tick's left half: a notch over the band, like its right half
+            for (int x = imax(xa, 170); x < imin(xb, 180); x++) {
+                if (tk[x] == 1) o[x] = on[W - 1 - x];
             }
-            const int h = (int)(clamp01(HAND_COV - d) * 255.0f);
-            if (h) cov[x] = (uint8_t)(255 - ((255 - cov[x]) * (255 - h) + 127) / 255);
         }
+        return;
+    }
+    const float dy = y + 0.5f - CY, bx = F.bx, by = F.by;
+    for (int x = xa; x < xb; x++) {
+        const int k = tk[x];
+        if (k) { // ticks switch as a whole
+            o[x] = F.tick_on[k - 1] ? on[x] : off[x];
+            continue;
+        }
+        const float dx = x + 0.5f - CX;
+        float cov;
+        const float raw = dx * by - dy * bx; // signed distance to the arc's end edge, > 0 before it
+        if (F.convex) {
+            // Right half only. Near the end edge, anti-alias; more than 90° away from it (behind the
+            // center), the sign alone decides: before the end (raw > 0) is covered.
+            if (dx < 0) cov = 0;
+            else if (dx * bx + dy * by > 0) cov = clamp01(raw + 0.5f);
+            else cov = raw > 0 ? 1.0f : 0.0f;
+        } else {
+            cov = dx >= 0 ? 1.0f : clamp01(raw + 0.5f);
+        }
+        if (cov <= 0) o[x] = off[x];
+        else if (cov >= 1) o[x] = on[x];
+        else o[x] = swap16(mixf(swap16(off[x]), swap16(on[x]), cov));
     }
 }
 
-// Simple pixels: live coverage over the static layer.
-static void composite_plain(uint16_t *o, const uint16_t *bg, int x0, int x1)
+// Pixels under text and glow: glow, then the text in its row's color.
+static void composite_text(uint16_t *o, const uint16_t *bg, int x0, int x1, const uint8_t *trow, const uint8_t *grow,
+                           uint16_t tc)
 {
-    const uint8_t *cov = s_cov;
-    const uint16_t live = F.live, live_sw = swap16(F.live);
+    const uint16_t live = F.live;
     for (int x = x0; x < x1; x++) {
-        const int c = cov[x];
-        o[x] = c == 0 ? bg[x] : (c == 255 ? live_sw : swap16(blend565(swap16(bg[x]), live, (uint32_t)(c + (c >> 7)))));
-    }
-}
-
-// Pixels under text and glow: glow, then live text, then dial-color text inside the slice.
-static void composite_text(uint16_t *o, const uint16_t *bg, int x0, int x1, const uint8_t *trow, const uint8_t *grow)
-{
-    const uint8_t *cov = s_cov;
-    const uint16_t live = F.live, dial = F.dial;
-    for (int x = x0; x < x1; x++) {
-        const int t = trow[x], g = grow ? grow[x] : 0, c = cov[x];
+        const int t = trow[x], g = grow ? grow[x] : 0;
         if ((t | g) == 0) {
-            o[x] = c == 0 ? bg[x] : (c == 255 ? swap16(live) : swap16(blend565(swap16(bg[x]), live, (uint32_t)(c + (c >> 7)))));
+            o[x] = bg[x];
             continue;
         }
         uint16_t px = swap16(bg[x]);
         if (g) px = mix565(px, live, g + (g >> 7));
-        const int l = 255 - ((255 - t) * (255 - c) + 127) / 255;
-        if (l) px = mix565(px, live, l + (l >> 7));
-        const int ts = (t * c + 127) / 255;
-        if (ts) px = mix565(px, dial, ts + (ts >> 7));
+        if (t) px = mix565(px, tc, t + (t >> 7));
         o[x] = swap16(px);
     }
 }
@@ -634,67 +629,46 @@ static void composite_ring(uint16_t *o, int y)
     const float oh = sqrtf(o2), ih = i2 > 0 ? sqrtf(i2) : 0.0f;
     const int spans[2][2] = {{ifloor(CX - oh), ifloor(CX - ih) + 1}, {ifloor(CX + ih), ifloor(CX + oh) + 1}};
     for (int k = 0; k < 2; k++) {
-        for (int x = imax(0, spans[k][0]); x < imin(LCD_H_RES, spans[k][1]); x++) {
+        for (int x = imax(0, spans[k][0]); x < imin(W, spans[k][1]); x++) {
             const float dx = x + 0.5f - CX;
             float phi = atan2f(dx, -dy);
             if (phi < 0) phi += 2 * (float)M_PI;
             if (phi > F.ring_end) continue;
             const float rg = clamp01(2.0f - absf(sqrtf(dx * dx + dy * dy) - RING_R)) * 0.8f;
-            if (rg > 0) o[x] = swap16(mix565(swap16(o[x]), F.ring, (int)(rg * 256)));
+            if (rg > 0) o[x] = swap16(mix565(swap16(o[x]), F.sub, (int)(rg * 256)));
         }
         if (ih == 0) break; // single span through the top/bottom of the ring
     }
 }
 
-// The recent-entries badge at 12 o'clock: a black disc over the hand and slice,
-// with the ring and clock icon on it in the live color.
-static void composite_top(uint16_t *o, int y)
-{
-    const float dy = y + 0.5f - TOP_CY;
-    const int my = y - (TOP_CY + HISTORY_ICON.oy);
-    for (int x = (int)CX - 36; x < (int)CX + 36; x++) {
-        const float dx = x + 0.5f - CX;
-        uint16_t px = swap16(o[x]);
-        // The disc stays solid whenever the badge shows (only the icon dims), so the hand never shows through.
-        const float disc = clamp01(TOP_DISC_R + 0.5f - sqrtf(dx * dx + dy * dy));
-        if (disc > 0) px = mix565(px, F.dial, (int)(disc * 256));
-        const int mx = x - ((int)CX + HISTORY_ICON.ox);
-        const int ring = mask_px(&MIC_RING, mx, my) * 115 >> 8, icon = mask_px(&HISTORY_ICON, mx, my) * 230 >> 8;
-        const int cov = (ring > icon ? ring : icon) * F.top_a256 >> 8;
-        if (cov) px = mix565(px, F.live, cov + (cov >> 7));
-        o[x] = swap16(px);
-    }
-}
-
-// The Wi-Fi glyph in the rim at 6 o'clock, in the tick color.
+// The Wi-Fi glyph in the rim at 6 o'clock: a tick color, or a dark notch when the band covers it.
 static void composite_wifi(uint16_t *o, int y)
 {
     const int my = y - (WIFI_CY + WIFI_ICON.oy);
     for (int mx = 0; mx < WIFI_ICON.w; mx++) {
-        const int cov = mask_px(&WIFI_ICON, mx, my) * F.wifi_a256 >> 8;
+        int cov = mask_px(&WIFI_ICON, mx, my) * F.wifi_a256 >> 8;
         if (!cov) continue;
         const int x = (int)CX + WIFI_ICON.ox + mx;
-        o[x] = swap16(mix565(swap16(o[x]), F.wifi_c, cov + (cov >> 7)));
+        if (F.wifi_on) o[x] = swap16(mix565(swap16(o[x]), 0, (cov * 159) >> 8)); // rgba(0,0,0,.62)
+        else o[x] = swap16(mix565(swap16(o[x]), F.wifi_c, cov + (cov >> 7)));
     }
 }
 
 static void render_row(uint16_t *o, int y)
 {
-    const uint16_t *bg = s_bg + y * LCD_H_RES;
+    const uint16_t *off = s_bg_off + y * W, *on = s_bg_on + y * W;
     const float dy = y + 0.5f - CY;
-    const float span2 = DYN_R * DYN_R - dy * dy;
-    if (span2 <= 0) {
-        memcpy(o, bg, LCD_H_RES * sizeof(uint16_t));
-        return;
+    const float in2 = RIM_IN * RIM_IN - dy * dy;
+    int xi0 = 180, xi1 = 180; // pixels in [xi0, xi1) are inside the rim
+    if (in2 > 0) {
+        const float ih = sqrtf(in2);
+        xi0 = imin(180, (int)(CX - ih) + 1);
+        xi1 = imax(180, (int)(CX + ih) - 1);
     }
-    const float span = sqrtf(span2);
-    const int xa = imax(0, ifloor(CX - span)), xb = imin(LCD_H_RES, ifloor(CX + span) + 1);
-    memcpy(o, bg, xa * sizeof(uint16_t));
-    memcpy(o + xb, bg + xb, (LCD_H_RES - xb) * sizeof(uint16_t));
+    rim_span(o, off, on, y, 0, xi0);
+    rim_span(o, off, on, y, xi1, W);
 
-    row_coverage(y, xa, xb);
-
-    int t0 = xb, t1 = xa; // text/glow x range in this row
+    int t0 = xi1, t1 = xi0; // text/glow x range in this row
     const uint8_t *trow = NULL, *grow = NULL;
     if (y >= TY0 && y < TY0 + TH) {
         const int r = y - TY0;
@@ -708,17 +682,16 @@ static void render_row(uint16_t *o, int y)
             grow = s_glow.px + r * TW - TX0;
         }
         trow = s_text.px + r * TW - TX0;
-        t0 = imax(t0, xa);
-        t1 = imin(t1, xb);
+        t0 = imax(t0, xi0);
+        t1 = imin(t1, xi1);
     }
     if (t1 > t0) {
-        composite_plain(o, bg, xa, t0);
-        composite_text(o, bg, t0, t1, trow, grow);
-        composite_plain(o, bg, t1, xb);
-    } else {
-        composite_plain(o, bg, xa, xb);
+        memcpy(o + xi0, off + xi0, (t0 - xi0) * sizeof(uint16_t));
+        composite_text(o, off, t0, t1, trow, grow, y < LIVE_ROW ? F.task_c : F.live);
+        memcpy(o + t1, off + t1, (xi1 - t1) * sizeof(uint16_t));
+    } else if (xi1 > xi0) {
+        memcpy(o + xi0, off + xi0, (xi1 - xi0) * sizeof(uint16_t));
     }
-    if (F.top_a256 && y >= TOP_CY - 36 && y < TOP_CY + 36) composite_top(o, y);
     if (F.wifi_a256 && y >= WIFI_CY - 12 && y < WIFI_CY + 12) composite_wifi(o, y);
     if (F.ring_on) composite_ring(o, y);
 }
@@ -727,19 +700,19 @@ static void render_row(uint16_t *o, int y)
 
 void render_init(void)
 {
-    s_bg = heap_caps_malloc(LCD_H_RES * LCD_V_RES * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
-    // PSRAM too: the per-row reads are sequential and cache well, and internal RAM is
+    // PSRAM: the per-row reads are sequential and cache well, and internal RAM is
     // needed by Wi-Fi and TLS (uploads slowed down badly with less than ~20 KB free).
+    s_bg_off = heap_caps_malloc(W * LCD_V_RES * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+    s_bg_on = heap_caps_malloc(W * LCD_V_RES * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+    s_tick = heap_caps_malloc(W * LCD_V_RES, MALLOC_CAP_SPIRAM);
     s_text.px = heap_caps_calloc(1, TW * TH, MALLOC_CAP_SPIRAM);
-    // The glow only shows during the last-minute pulse; it lives in PSRAM so
-    // internal RAM stays free for Wi-Fi and TLS.
     s_glow.px = heap_caps_calloc(1, TW * TH, MALLOC_CAP_SPIRAM);
-    assert(s_bg && s_text.px && s_glow.px);
+    assert(s_bg_off && s_bg_on && s_tick && s_text.px && s_glow.px);
     for (int r = 0; r < TH; r++) {
         s_text.lo[r] = s_glow.lo[r] = TW;
         s_text.hi[r] = s_glow.hi[r] = -1;
     }
-    ESP_LOGI(TAG, "layers ready (text in %s)", esp_ptr_internal(s_text.px) ? "internal RAM" : "PSRAM");
+    ESP_LOGI(TAG, "layers ready (in PSRAM)");
 }
 
 void render_invalidate(void) { s_has_last = false; }
@@ -752,7 +725,7 @@ void render_set_rotation(int deg)
 
 static void reverse_row(uint16_t *o)
 {
-    for (int i = 0, j = LCD_H_RES - 1; i < j; i++, j--) {
+    for (int i = 0, j = W - 1; i < j; i++, j--) {
         const uint16_t t = o[i];
         o[i] = o[j];
         o[j] = t;
@@ -762,24 +735,31 @@ static void reverse_row(uint16_t *o)
 // Layers and per-frame constants for a scene.
 static void frame_setup(const scene_t *s)
 {
-    if (bg_key(s) != s_bg_key) {
-        build_bg(s->palette, s->rim_on, s->rim_rgb, s->wifi_rim);
-        s_bg_key = bg_key(s);
+    bg_params_t bp;
+    scene_bg_params(s, &bp);
+    if (!s_bg_valid || memcmp(&bp, &s_bgp, sizeof bp) != 0) {
+        build_bg(&bp);
+        s_bgp = bp;
+        s_bg_valid = true;
     }
     build_text(s);
+    const theme_t *th = &THEMES[s->theme];
     F.live = rgb_to_565(s->live_rgb);
-    F.dial = rgb_to_565(PALETTES[s->palette].dial);
-    F.ring = rgb_to_565(0x8E8E94);
+    F.task_c = rgb_to_565(s->task_untitled ? th->sub : th->ink);
+    F.face = rgb_to_565(th->face);
+    F.sub = rgb_to_565(th->sub);
     F.glow_on = s->glow > 0.004f;
-    F.empty = s->slice_deg < 0.05f;
-    F.full = s->slice_deg > 359.95f;
-    F.convex = s->slice_deg <= 180.0f;
-    const float th = s->slice_deg * (float)M_PI / 180.0f;
-    F.bx = sinf(th);
-    F.by = -cosf(th);
-    F.top_a256 = (int)(s->top_alpha * 256);
+    F.full = s->rim_frac >= 0.9995f;
+    F.empty = s->rim_frac <= 0.0005f;
+    F.convex = s->rim_frac <= 0.5f;
+    const float th_rad = s->rim_frac * 2 * (float)M_PI;
+    F.bx = sinf(th_rad);
+    F.by = -cosf(th_rad);
+    const float deg = s->rim_frac * 360;
+    for (int k = 0; k < 12; k++) F.tick_on[k] = F.full || (k == 0 ? deg > 0.5f : k * 30 < deg - 0.5f);
+    F.wifi_on = F.full || deg > 180;
     F.wifi_a256 = s->wifi_rim ? (int)(s->wifi_alpha * 256) : 0;
-    F.wifi_c = s->rim_on ? blend565(rgb_to_565(s->rim_rgb), 0, 159) : rgb_to_565(PALETTES[s->palette].major);
+    F.wifi_c = rgb_to_565((s->pomo ? &THEMES[THEME_MONO] : th)->major);
     F.ring_end = s->hold_progress * 2 * (float)M_PI;
     F.ring_on = F.ring_end > 0;
 }
@@ -787,8 +767,7 @@ static void frame_setup(const scene_t *s)
 void render_frame(const scene_t *s)
 {
     const int64_t t0 = esp_timer_get_time();
-    int ya, yb;
-    dirty_rows(s, &ya, &yb);
+    const uint32_t dirty = dirty_bands(s);
     frame_setup(s);
     s_stats.text_us += esp_timer_get_time() - t0;
     s_stats.frames++;
@@ -796,12 +775,12 @@ void render_frame(const scene_t *s)
     // Bands are in screen rows; with a 180° rotation, screen row Y shows scene row 359 - Y mirrored.
     for (int y0 = 0; y0 < LCD_V_RES; y0 += DISPLAY_BAND_ROWS) {
         const int s0 = s_rot180 ? LCD_V_RES - (y0 + DISPLAY_BAND_ROWS) : y0;
-        if (s0 + DISPLAY_BAND_ROWS <= ya || s0 >= yb) continue; // band unchanged
+        if (!(dirty & (1u << (s0 / DISPLAY_BAND_ROWS)))) continue; // band unchanged
         const int64_t w0 = esp_timer_get_time();
         uint16_t *out = display_band_buffer();
         s_stats.wait_us += esp_timer_get_time() - w0;
         for (int yy = 0; yy < DISPLAY_BAND_ROWS; yy++) {
-            uint16_t *o = out + yy * LCD_H_RES;
+            uint16_t *o = out + yy * W;
             const int Y = y0 + yy;
             render_row(o, s_rot180 ? LCD_V_RES - 1 - Y : Y);
             if (s_rot180) reverse_row(o);
@@ -814,9 +793,9 @@ void render_frame(const scene_t *s)
     s_stats.total_us += esp_timer_get_time() - t0;
 }
 
-// ---- Project picker -------------------------------------------------------------
-// A list on black: each row is a color dot and a name, centered together. The
-// selected row sits in the middle; the others fade with distance.
+// ---- Lists ----------------------------------------------------------------------
+// A list on the face color: each row is a color dot and a name, centered together.
+// The selected row sits in the middle; the others fade with distance.
 
 #define PK_ROW 44.0f
 #define PK_MAX_W 240 // px; longer names end in an ellipsis
@@ -834,16 +813,17 @@ typedef struct {
 
 static pk_row_t s_pk[PK_ROWS];
 static int s_npk;
+static uint16_t s_pk_face, s_pk_ink, s_pk_sub;
 
 static void picker_row(uint16_t *o, int y, int hint)
 {
-    memset(o, 0, LCD_H_RES * sizeof(uint16_t));
+    for (int x = 0; x < W; x++) o[x] = s_pk_face;
     for (int k = 0; k < s_npk; k++) {
         const pk_row_t *r = &s_pk[k];
         const float dy = y + 0.5f - r->cy;
         if (dy > -r->dot_r - 2 && dy < r->dot_r + 2) {
             const int x0 = ifloor(r->dot_x - r->dot_r - 2), x1 = ifloor(r->dot_x + r->dot_r + 2);
-            for (int x = imax(0, x0); x <= imin(LCD_H_RES - 1, x1); x++) {
+            for (int x = imax(0, x0); x <= imin(W - 1, x1); x++) {
                 const float dx = x + 0.5f - r->dot_x, d = sqrtf(dx * dx + dy * dy);
                 const float cov = r->hollow ? clamp01(1.25f - absf(d - r->dot_r)) : clamp01(r->dot_r + 0.5f - d);
                 if (cov > 0) o[x] = mix565(o[x], r->dot_c, (int)(cov * r->a256));
@@ -851,14 +831,14 @@ static void picker_row(uint16_t *o, int y, int hint)
         }
         int pen16 = r->x16;
         for (int i = 0; i < r->n; i++) {
-            const glyph_t *gl = &TASK_FONT[r->g[i]];
+            const glyph_t *gl = &LIST_FONT[r->g[i]];
             const int gy = y - (r->base + gl->m.oy);
             if (gl->m.w && gy >= 0 && gy < gl->m.h) {
                 const int gx0 = ((pen16 + 8) >> 4) + gl->m.ox;
                 const uint8_t *src = gl->m.data + gy * gl->m.w;
                 for (int j = 0; j < gl->m.w; j++) {
                     const int X = gx0 + j;
-                    if (src[j] && (unsigned)X < LCD_H_RES) o[X] = mix565(o[X], 0xFFFF, (src[j] * r->a256) >> 8);
+                    if (src[j] && (unsigned)X < W) o[X] = mix565(o[X], s_pk_ink, (src[j] * r->a256) >> 8);
                 }
             }
             pen16 += gl->adv16;
@@ -868,26 +848,29 @@ static void picker_row(uint16_t *o, int y, int hint)
         const mask_t *m = &STRINGS[hint];
         const int gy = y - (316 + m->oy);
         if (gy >= 0 && gy < m->h) {
-            const uint16_t gray = rgb_to_565(0x8E8E94);
             const int gx0 = (int)CX + m->ox;
             const uint8_t *src = m->data + gy * m->w;
             for (int j = 0; j < m->w; j++) {
-                if (src[j]) o[gx0 + j] = mix565(o[gx0 + j], gray, src[j] + (src[j] >> 7));
+                if (src[j]) o[gx0 + j] = mix565(o[gx0 + j], s_pk_sub, src[j] + (src[j] >> 7));
             }
         }
     }
-    for (int x = 0; x < LCD_H_RES; x++) o[x] = swap16(o[x]);
+    for (int x = 0; x < W; x++) o[x] = swap16(o[x]);
 }
 
 static void picker_setup(const picker_view_t *v)
 {
+    const theme_t *th = &THEMES[v->theme];
+    s_pk_face = rgb_to_565(th->face);
+    s_pk_ink = rgb_to_565(th->ink);
+    s_pk_sub = rgb_to_565(th->sub);
     s_npk = 0;
     for (int i = 0; i < v->count && s_npk < PK_ROWS; i++) {
         const float a = 1.0f - 0.36f * absf(i - v->pos);
         if (a <= 0.01f) continue;
         pk_row_t *r = &s_pk[s_npk++];
         int w16;
-        r->n = layout_text(v->names[i], TASK_FONT, r->g, PK_MAX_W * 16, &w16);
+        r->n = layout_text(v->names[i], LIST_FONT, r->g, PK_MAX_W * 16, &w16);
         const float left = CX - (20.0f + w16 / 16.0f) / 2;
         r->x16 = (int)((left + 20) * 16);
         r->dot_x = left + 6;
@@ -895,7 +878,7 @@ static void picker_setup(const picker_view_t *v)
         r->base = ifloor(r->cy + 0.5f) + 6;
         r->dot_r = i == v->selected ? 6.0f : 4.5f;
         r->hollow = v->hollow[i];
-        r->dot_c = rgb_to_565(v->hollow[i] ? 0x8E8E94 : v->colors[i]);
+        r->dot_c = v->hollow[i] ? s_pk_sub : rgb_to_565(v->colors[i]);
         r->a256 = (int)(a * 256);
     }
 }
@@ -907,14 +890,14 @@ void render_picker(const picker_view_t *v)
     for (int y0 = 0; y0 < LCD_V_RES; y0 += DISPLAY_BAND_ROWS) {
         uint16_t *out = display_band_buffer();
         for (int yy = 0; yy < DISPLAY_BAND_ROWS; yy++) {
-            uint16_t *o = out + yy * LCD_H_RES;
+            uint16_t *o = out + yy * W;
             const int Y = y0 + yy;
             picker_row(o, s_rot180 ? LCD_V_RES - 1 - Y : Y, v->hint);
             if (s_rot180) reverse_row(o);
         }
         display_flush_band(y0, DISPLAY_BAND_ROWS);
     }
-    s_has_last = false; // back on the dial, everything is redrawn
+    s_has_last = false; // back on the face, everything is redrawn
     s_stats.frames++;
     s_stats.bands += LCD_V_RES / DISPLAY_BAND_ROWS;
     s_stats.total_us += esp_timer_get_time() - t0;
@@ -926,10 +909,10 @@ void render_capture(const scene_t *s, const picker_view_t *v, uint16_t *out)
 {
     if (v) {
         picker_setup(v);
-        for (int y = 0; y < LCD_V_RES; y++) picker_row(out + y * LCD_H_RES, y, v->hint);
+        for (int y = 0; y < LCD_V_RES; y++) picker_row(out + y * W, y, v->hint);
     } else {
         frame_setup(s);
-        for (int y = 0; y < LCD_V_RES; y++) render_row(out + y * LCD_H_RES, y);
+        for (int y = 0; y < LCD_V_RES; y++) render_row(out + y * W, y);
     }
     s_has_last = false; // the layers were rebuilt; redraw everything next frame
 }
