@@ -1,44 +1,58 @@
-# Knob Pomodoro
+# Knob Timer
 
-A focus timer for the [Waveshare ESP32-S3-Knob-Touch-LCD-1.8](https://www.waveshare.com/wiki/ESP32-S3-Knob-Touch-LCD-1.8), a round 1.8″ touchscreen with a rotary knob. You set the length with the knob and tap to start. Two clock hands sweep a slice that shrinks as time runs out. You can say what you're working on, and the knob logs the time to **Toggl** for you.
+A Toggl time tracker for the [Waveshare ESP32-S3-Knob-Touch-LCD-1.8](https://www.waveshare.com/wiki/ESP32-S3-Knob-Touch-LCD-1.8), a round 1.8″ touchscreen with a rotary knob. Tap to start tracking. The knob counts up and logs the time to **Toggl** under your task and project. A second mode is a Pomodoro countdown that logs to Toggl too. You can say what you're working on.
 
-| Ready | Running | Listening |
+| Tracking | Pomodoro | Inverted |
 |:-:|:-:|:-:|
-| ![Ready to start](docs/screens/idle.png) | ![Counting down](docs/screens/running.png) | ![Listening, with a live waveform](docs/screens/listening.png) |
+| ![Tracking, counting up](docs/assets/screens/tracking.png) | ![Pomodoro, 15 minutes left](docs/assets/screens/pomodoro.png) | ![The Inverted profile](docs/assets/screens/inverted.png) |
 
 *(Screens captured from the device with the test harness.)*
 
+**Docs:**
+- [User guide](docs/USER-GUIDE.md): using the knob day to day, with every screen, gesture and status message.
+- [Tests](docs/TESTS.md): every scenario the test harness runs, step by step, and what counts as a pass.
+
 ## Features
 
-- **One adjustable timer, 1–60 minutes.** The full circle is 60 minutes. The slice between the fixed 12 o'clock hand and the moving hand is the time left.
-- **Calm warm-up.** In the last 10 minutes the slice fades from your color profile to Leuchtorange (5:00), then to deep red (1:00). In the last minute the time itself pulses like a heartbeat. Time's up buzzes the vibration motor.
-- **Voice tasks.** Tap the mic and say what you're working on. OpenAI speech-to-text turns it into the task name shown above the time, and a waveform shows the knob hearing you. Saying a project name ("Acme review") selects that project.
-- **Toggl.**
-  - Every stretch of running time becomes a Toggl entry with your task and project. Pauses aren't logged, and runs under 10 seconds are ignored.
-  - The clock badge at the top lists your recent entries, newest first, so you can pick one as the task. "No task" clears it.
-  - Swipe down to pick a project. The rim around the dial takes the project's Toggl color.
-- **Offline-safe.** If Wi-Fi drops mid-run, the start and stop times are kept and sent once it's back.
-- **8 color profiles** for the slice: Sunflower, Lagoon, Lime, Glacier, Mint, Seafoam, Cream, Mono. The face is always black.
-- **Remembers** the length, profile, task and project across power-offs.
+- **Two modes.** Swipe up to switch while the timer is stopped.
+  - **Tracking** (the default) counts up. Pause and resume as often as you like: the total keeps adding up, and each running stretch is its own Toggl entry. From an hour on, the time shows as HH:MM:SS.
+  - **Pomodoro** counts down from 1–60 minutes. The rim is the clock: an arc from 12 o'clock that shrinks as time runs out.
+- **Your task and project, big.** The project sits in a pill at the top, in its Toggl color. The task is under it in large type, and a long one scrolls. With no task it says "Untitled". The rim takes the project's color too.
+- **Toggl, as you go.**
+  - An entry starts in Toggl the moment you tap start, and stops when you pause, reset or switch tasks.
+  - Stopped within 10 seconds? The entry is deleted, so an accidental tap leaves nothing behind.
+  - Forgot to start? Turn the knob clockwise while tracking: each click moves the start a minute earlier, in Toggl too. Anticlockwise takes a minute off.
+  - Tap the task for your recent entries and pick one. While tracking, that switches to a new entry and the counter keeps going.
+  - Tap the pill to pick a project. The running entry follows.
+  - Swipe down to sync. If a timer was started elsewhere (on your phone, say), the knob picks it up. If its own timer was stopped elsewhere, it pauses.
+  - The knob only talks to Toggl when you do something. It never polls, because Toggl's free plan allows few requests.
+- **Voice tasks.** Tap the mic and say what you're working on. OpenAI speech-to-text turns it into the task, and a waveform shows the knob hearing you. Saying a project name ("Acme review") selects that project. While running, it renames the running entry.
+- **Pomodoro warm-up.** In the last 10 minutes the time fades to Leuchtorange (5:00), then to deep red (1:00). In the last minute it pulses like a heartbeat.
+- **Time's up you can feel.** The knob vibrates at full strength for 30 seconds. Touch the screen or turn the knob to stop it sooner.
+- **Two color profiles:** Mono (white on black) and Inverted (black on white). Swipe left or right to switch, even while running.
+- **Offline-friendly.** If Wi-Fi drops mid-run, the start and stop times are kept and sent once it's back (up to 12 stretches, held in memory).
+- **You decide when to sync.** The knob never checks Toggl on its own. After a restart it comes back reset, even if its Toggl entry is still running, so pause before you unplug, or swipe down before you start.
+- **Remembers** the mode, profile, Pomodoro length, task and project across power-offs.
 - **Status at a glance:** a Wi-Fi glyph in the rim at 6 o'clock, steady when connected and pulsing while reconnecting.
 
 ## Using the knob
 
-| Do this | When | What happens |
+| Do this | Mode | What happens |
 |---|---|---|
-| Turn the knob | Reset | Sets the length, one minute per click (1–60) |
-| Turn the knob | Paused | Steps whole minutes; the seconds go back to :00 |
-| Turn the knob | Running | Locked (a soft bump and "pause to adjust") |
-| Tap the screen | Any time | Start, pause, resume; dismisses "time's up" |
-| Hold 0.7 s | Running or paused | Reset to the set length |
-| Tap the **mic** (bottom) | Stopped | Listen; stops when you pause, or tap again |
-| Tap the **clock badge** (top) | Stopped | Recent Toggl entries; turn to scroll, tap to choose |
-| Swipe down | Stopped | Toggl projects; turn to scroll, tap to choose, swipe up to close |
-| Swipe left / right | Stopped | Change the slice's color profile |
+| Tap the screen | Both | Start, pause, resume. Pomodoro: dismisses "time's up" |
+| Hold 0.7 s | Both | Reset. Tracking: to 00:00; Pomodoro: to the length you set |
+| Turn the knob | Tracking, running | Clockwise adds a minute, anticlockwise takes one off (the Toggl entry follows) |
+| Turn the knob | Pomodoro | Reset: sets the length (1–60). Paused: to the next whole minute up or down. Running: locked ("pause to adjust") |
+| Tap the **task** | Both | Recent Toggl entries ("Untitled" on top); turn to scroll, tap to choose |
+| Tap the **project pill** | Both | Toggl projects ("No project" last) |
+| Tap the **mic** | Both | Listen; stops when you pause, or tap again |
+| Swipe up | Both | Switch Tracking ↔ Pomodoro (not while running: "pause to switch"). Closes an open list |
+| Swipe down | Tracking | Sync with Toggl's running timer. Closes an open list |
+| Swipe left / right | Both | Switch Mono ↔ Inverted |
 
-A tap that just misses a button does nothing (you feel a bump), so a near miss never starts the timer. Lists close by themselves after 10 seconds.
+A tap that just misses the mic does nothing (you feel a bump), so a near miss never starts the timer. In a list, a tap chooses the highlighted row. In the projects list that takes a turn of the knob first, so a reflex tap never clears your project. Lists close by themselves after 10 seconds, and when a Pomodoro runs out.
 
-There's also an interactive design preview of the interface in `preview/knob-pomodoro.html`. Open it in a browser.
+There's also an interactive design preview of the interface in `preview/toggl-pomodoro-timer.html`. Open it in a browser. It simulates Toggl, including timers started and stopped elsewhere.
 
 ## What you need
 
@@ -103,7 +117,7 @@ To watch the log: `idf.py -p /dev/cu.usbmodem101 monitor` (Ctrl-] to quit).
 ### 4. Check that everything works
 
 ```sh
-python tools/knob_test.py --quick     # about 2 minutes, no side effects
+python tools/knob_test.py --quick     # a few minutes, no side effects
 ```
 
 See [Testing](#testing) for the full suite.
@@ -114,24 +128,25 @@ See [Testing](#testing) for the full suite.
 
 - boot and memory
 - Wi-Fi and Toggl
-- the knob, timer and time's up
-- gestures, hit areas, the dead zone and color profiles
-- the project and entry lists, and the task display
+- the layout, the long-task scroll, both profiles and the Pomodoro rim (from screen captures)
+- both modes: counting up, pausing, the knob, time's up and its buzzing
+- hit areas and the mic's dead zone
+- the task and project lists
 - voice
-- Toggl sync, including offline
+- Toggl sync: immediate starts, deleting accidental starts, moving the start, switching tasks, syncing with timers started elsewhere, offline
 - telemetry, frame rate and crashes
 
-The cases are listed in **[firmware/TESTS.md](firmware/TESTS.md)**.
+Every scenario, what it does and what counts as a pass, is in **[docs/TESTS.md](docs/TESTS.md)**.
 
 ```sh
 cd firmware && . ../idf-env.sh
-python tools/knob_test.py              # everything, about 5 minutes
+python tools/knob_test.py              # everything, about 10 minutes
 python tools/knob_test.py --quick      # skip slow cases and side effects
-python tools/knob_test.py --only K4,S2 # chosen cases
+python tools/knob_test.py --only R4,S5 # chosen cases
 python tools/knob_test.py --telemetry  # also save TELEMETRY lines
 ```
 
-The full run speaks a phrase through the Mac's speakers and creates a few short Toggl entries named `knob-test …`. Delete those afterwards if you like. Your length, profile, task and project are restored at the end.
+The full run speaks a phrase through the Mac's speakers and creates a few short Toggl entries named `knob-test …`. Delete those afterwards if you like. Timer cases that aren't about Toggl run with Wi-Fi switched off, so they don't use up Toggl's request limit. Your mode, profile, length, task and project are restored at the end.
 
 Results go to `firmware/test-output/`: `report.json`, the serial log, and PNG captures of the real screen.
 
@@ -140,7 +155,7 @@ Results go to `firmware/test-output/`: `report.json`, the serial log, and PNG ca
 The firmware has a debug interface on the USB serial port that the test harness uses. You can use it too, from any serial terminal:
 
 - **Single keys:** `d` prints the state as JSON, `c` captures the screen, `s` starts or pauses, and so on.
-- **`#` commands:** `#task …`, `#project ID`, `#set N`, `#wifi off`, `#list`, `#reboot`.
+- **`#` commands:** `#task …`, `#project ID`, `#set N`, `#app track|pomo`, `#theme mono|inverted`, `#wifi off`, `#list`, `#reboot`, and `#toggl start|stop` to start or stop a Toggl timer as another device would.
 
 **Telemetry is off by default.** `#telemetry on` makes the knob print a `TELEMETRY {...}` line every 5 seconds with:
 
@@ -161,7 +176,8 @@ For a build that doesn't listen on USB at all, run `idf.py menuconfig` → **Kno
 | Symptom | Fix |
 |---|---|
 | No `/dev/cu.usbmodem*` port | Flip the USB-C plug at the knob end; the other orientation reaches the second chip. |
-| "voice isn't set up" / "Toggl isn't set up" | That key is empty in `main/secrets.h`; fill it in, rebuild and flash. |
+| No mic on the screen, or "Toggl isn't set up" | That key is empty in `main/secrets.h`; fill it in, rebuild and flash. |
+| "not saved in Toggl" | Toggl turned down a start or a change for good (for example, the project was archived). The knob keeps counting; swipe down to see what Toggl has. |
 | "no Wi-Fi", or the Wi-Fi glyph keeps pulsing | Check the network name and password, and that the network is 2.4 GHz. |
 | Log says `Toggl rejected the API key` | Use a Toggl 2.0 key (`toggl_sk_…`), not a classic Toggl Track token. |
 | Log says it can't find your Toggl organization | Set `TOGGL_ORGANIZATION_ID` (the first number in Toggl's web address). |
@@ -177,8 +193,8 @@ esptool.py --port /dev/cu.usbmodem101 write_flash 0 backup/factory-firmware-esp3
 ## How it works
 
 - **Display.** A 360×360 ST77916 panel over QSPI, drawn by a small software renderer (no GUI library):
-  - A static background holds the ticks and the project rim.
-  - Text layers are drawn per row and composited, and only rows that changed are redrawn, in 24-row bands sent by DMA.
+  - Two static backgrounds hold the face, the project pill, the ticks and the rim: one with the rim band off, one with it on. Each frame picks between them per pixel, which draws the Pomodoro arc.
+  - A text layer (task, time, status, mic) is composited per row, and only rows that changed are redrawn, in 24-row bands sent by DMA.
   - The whole interface is rotated 180° relative to the panel.
 - **Input.**
   - **Knob:** not quadrature; each direction pulses its own GPIO.
@@ -189,36 +205,42 @@ esptool.py --port /dev/cu.usbmodem101 write_flash 0 backup/factory-firmware-esp3
   - A 150 Hz high-pass filter removes hum, and live speech detection ends the recording after about 1.3 s of quiet.
   - The audio goes to OpenAI's `gpt-transcribe` as a WAV upload.
 - **Toggl.** Toggl 2.0's API (`focus.toggl.com/api`, Bearer key):
-  - Runs are started and stopped through `tracking/start` and `tracking/stop`.
-  - Before stopping, the knob checks that the running timer is still the one it started.
-  - Entries come from a `time-entries` query (newest 50, finished ones only).
+  - Runs are started and stopped through `tracking/start` and `tracking/stop`. Before stopping, the knob checks `tracking/current` to make sure the running timer is still the one it started.
+  - Knob adjustments, renames and project changes go out as one `PATCH` once they settle (1.5 s), carrying only the fields that changed. Accidental starts are removed with `DELETE`.
+  - Swipe-down sync is a single `tracking/current` request.
+  - Entries come from a `time-entries` query (the newest 50 from the last 30 days, finished ones only).
 - **Networking.** One background task handles all HTTPS, so the screen never waits. It uses public DNS (1.1.1.1 and 8.8.8.8), IPv4, 32 KB TCP windows and software AES, with retries for dropped connections.
 
 ## Project layout
 
 ```
-README.md, AGENTS.md         this file; guidance for coding agents
-idf-env.sh                   loads ESP-IDF into the shell
-docs/screens/                screenshots captured from the device
-preview/knob-pomodoro.html   interactive design preview (keep in sync with the firmware)
+README.md                           this file
+AGENTS.md                           guidance for coding agents
+TODO.md                             open UX problems for future work
+idf-env.sh                          loads ESP-IDF into the shell
+docs/
+  USER-GUIDE.md                     how to use the knob, with screenshots
+  TESTS.md                          every test scenario and its pass condition
+  assets/screens/                   screenshots captured from the device
+  assets/user-guide/                screenshots of the preview for the user guide
+preview/toggl-pomodoro-timer.html   interactive design preview (keep in sync with the firmware)
 firmware/
-  main/                      the application (C)
-    main.c                   state machine, input handling, debug interface, telemetry
-    render.c / .h            software renderer (dial, text, buttons, lists, capture)
-    display.c / .h           QSPI panel driver setup, DMA bands
-    input.c / .h             knob and touch gestures
-    mic.c / .h               microphone capture, speech detection, clean-up
-    net.c / .h               Wi-Fi, DNS, clock sync
-    cloud.c / .h             OpenAI transcription, Toggl 2.0 client, offline queue
+  main/                             the application (C)
+    main.c                          state machine, input handling, debug interface, telemetry
+    render.c / .h                   software renderer (face, rim, pill, text, lists, capture)
+    display.c / .h                  QSPI panel driver setup, DMA bands
+    input.c / .h                    knob and touch gestures
+    mic.c / .h                      microphone capture, speech detection, clean-up
+    net.c / .h                      Wi-Fi, DNS, clock sync
+    cloud.c / .h                    OpenAI transcription, Toggl 2.0 client, offline queue
     haptics.c, settings.c, color.c, board.h, project.h, config.h
-    assets.c / .h            generated glyphs and icons (tools/gen_assets.py)
-    secrets.example.h        credentials template (copy to secrets.h)
-    Kconfig.projbuild        build options (debug interface)
+    assets.c / .h                   generated glyphs and icons (tools/gen_assets.py)
+    secrets.example.h               credentials template (copy to secrets.h)
+    Kconfig.projbuild               build options (debug interface)
   tools/
-    knob_test.py             end-to-end test harness
-    gen_assets.py            regenerates assets.c from the Manrope font (needs Pillow)
-    fonts/                   Manrope (SIL Open Font License)
-  TESTS.md                   test catalog
+    knob_test.py                    end-to-end test harness
+    gen_assets.py                   regenerates assets.c from the Manrope font (needs Pillow and fontTools)
+    fonts/                          Manrope (SIL Open Font License)
   partitions.csv, sdkconfig.defaults, sdkconfig
 ```
 
