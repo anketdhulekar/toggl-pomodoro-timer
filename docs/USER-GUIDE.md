@@ -34,14 +34,14 @@ From top to bottom:
 | **Rim** | Tracking: a full ring in the project's color. With no project it's white (black in the Inverted profile). Pomodoro: an arc from 12 o'clock that shows the time left out of 60 minutes, over a faint full ring. |
 | **Wi-Fi glyph** | In the rim at 6 o'clock. Steady when connected, pulsing while the knob reconnects. If no Wi-Fi network is set up, a normal tick sits there instead. |
 
-When you press and hold, a thin gray ring fills around the middle of the screen. When it closes (0.7 s), the hold counts as a reset.
+When you press and hold, a thin gray ring fills around the middle of the screen. When it closes (0.7 s), the hold counts as a reset. A reset also sets the task back to "Untitled" and clears the project.
 
 ## Gestures at a glance
 
 | Do this | Tracking | Pomodoro | In a list |
 |---|---|---|---|
 | **Tap the screen** | Start, pause, resume | Start, pause, resume. At time's up: back to the set length | Choose the highlighted row (see [lists](#your-task-and-project)) |
-| **Hold 0.7 s** | Reset to 00:00 | Reset to the set length | Nothing |
+| **Hold 0.7 s** | Reset to 00:00, clear the task and the project | Reset to the set length, clear the task and the project | Nothing |
 | **Turn the knob** | Running: each click moves the start a minute (clockwise = more time). Stopped: a bump | Reset: set the length (1–60 min). Paused: whole minutes. Running: locked | Scroll |
 | **Tap the task** | Past tasks list | Past tasks list | (Choose) |
 | **Tap the pill** | Projects list | Projects list | (Choose) |
@@ -61,7 +61,7 @@ Tracking is the main mode. It counts up from 00:00.
 
 - **Tap** to start. The time counts up and the status line is empty.
 - **Tap** again to pause. The total stays and the status line breathes "paused". Tap to resume: the total keeps adding up.
-- **Hold** to reset to 00:00 ("reset"). Holding while already at 00:00 just bumps.
+- **Hold** to reset ("reset"). The time goes back to 00:00, the task to "Untitled", and the project to "No project". If the timer runs, its Toggl entry stops first. Holding when all of these are already reset just bumps.
 - **Turn the knob while running** to fix the start. Each clockwise click adds a minute, for when you started working before you tapped. Each anticlockwise click takes a minute off, but never more than the current stretch has run. When the timer isn't running, the knob just bumps.
 - **From one hour on**, the time shows as HH:MM:SS in smaller digits.
 
@@ -78,7 +78,7 @@ Pomodoro counts down from a length you set, from 1 to 60 minutes. Its runs are l
 - **Set the length** by turning the knob while the timer is reset. Each click is a minute, and the arc on the rim grows and shrinks with it. At the ends you'll see "1 min minimum" or "60 min maximum". A 60-minute timer shows 60:00.
 - **Tap** to start. The arc shrinks as time runs out. The knob is locked while running ("pause to adjust").
 - **Tap** to pause. Turning the knob now moves to whole minutes: clockwise up to the next one (24:58 becomes 25:00), anticlockwise down to the one below (24:58 becomes 24:00). The set length doesn't change.
-- **Hold** to reset to the set length.
+- **Hold** to reset ("reset"). The time goes back to the set length, the task to "Untitled", and the project to "No project". If the countdown runs, its Toggl entry stops first. Holding when all of these are already reset just bumps.
 
 | Set to 25 minutes | Running |
 |:-:|:-:|
@@ -92,7 +92,8 @@ The Pomodoro rim always sits on a black band with gray ticks, in both color prof
 - **The last minute.** The time pulses once a second, swelling slightly with a glow, like a heartbeat.
 - **Time's up.** The time reads 00:00, the status says "time's up", the pulse continues, and the knob **vibrates at full strength for 30 seconds**. To stop it sooner:
   - **Turn the knob:** the vibration stops and "time's up" stays on screen.
-  - **Tap** (or hold): the vibration stops and the timer goes back to the set length in one go.
+  - **Tap:** the vibration stops and the timer goes back to the set length in one go.
+  - **Hold:** the same as a tap, and the task and the project are also cleared.
   - **Swipe:** the vibration stops and the swipe does its usual job. Swiping up switches to Tracking; "time's up" is still there when you come back.
 
   If a list is open when time runs out, it closes, so you see "time's up" and your tap can't choose a row by accident.
@@ -210,7 +211,7 @@ You can keep tracking without Wi-Fi (see [Offline](#offline)). Voice, past tasks
 | tap to start | Pomodoro, reset: tap to start the countdown. |
 | paused | The timer is paused (breathes slowly). |
 | time's up | The Pomodoro reached 00:00. Tap to go back to the set length. |
-| reset | After a hold: back to 00:00, or to the set length. |
+| reset | After a hold: back to 00:00, or to the set length, with no task and no project. |
 | 1 min minimum | Pomodoro: the knob tried to go below 1 minute. |
 | 60 min maximum | Pomodoro: the knob tried to go above 60 minutes. |
 | pause to adjust | You turned the knob during a running Pomodoro; it's locked until you pause. |

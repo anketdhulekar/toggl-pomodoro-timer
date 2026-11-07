@@ -387,7 +387,7 @@ kbd {
       <h3>Both modes</h3>
       <dl class="ctl">
         <div><dt>Tap the screen</dt><dd>Start, pause and resume. Press <kbd>Space</kbd>.</dd></div>
-        <div><dt>Hold</dt><dd>Reset: to 0:00 in Tracking, to the set length in Pomodoro. Press <kbd>R</kbd>.</dd></div>
+        <div><dt>Hold</dt><dd>Reset: the time goes to 0:00 in Tracking and to the set length in Pomodoro. The task goes back to "Untitled", and the project is cleared to "No project". Press <kbd>R</kbd>.</dd></div>
         <div><dt>Tap the task</dt><dd>Past tasks, newest first, with "Untitled" on top. Turn the knob to scroll, tap to choose. A task too long for the screen scrolls by itself. Press <kbd>T</kbd>.</dd></div>
         <div><dt>Tap the project pill</dt><dd>Your Toggl projects; "Work" is the default. Press <kbd>P</kbd>.</dd></div>
         <div><dt>Tap the mic</dt><dd>Say the task (simulated here). Saying a project's name picks it. Press <kbd>M</kbd>.</dd></div>
@@ -627,11 +627,14 @@ kbd {
     }
     haptic("tick");
   }
+  // A hold also clears the task ("Untitled") and the project ("No project"), in both modes.
+  const atDefaults = () => !S.task && !S.project;
+  function clearTaskProject() { S.task = ""; S.project = 0; }
   function trackHold() {
     const t = S.t;
-    if (t.state === "reset") return bump();
+    if (t.state === "reset" && atDefaults()) return bump();
     if (t.state === "running") tgStop(S.entryId);
-    S.entryId = null; t.state = "reset"; t.session = 0;
+    S.entryId = null; t.state = "reset"; t.session = 0; clearTaskProject();
     hint("reset"); haptic("double"); announce("Reset");
   }
   // Turning the knob while tracking adjusts the time: clockwise adds a minute (the stretch started a
@@ -691,9 +694,9 @@ kbd {
     haptic("tick");
   }
   function pomoHold() {
-    if (S.p.state === "reset") return bump();
+    if (S.p.state === "reset" && atDefaults()) return bump();
     if (S.p.state === "running") tgStop(S.entryId);
-    S.entryId = null; pomoReset(); hint("reset"); haptic("double"); announce("Reset");
+    S.entryId = null; pomoReset(); clearTaskProject(); hint("reset"); haptic("double"); announce("Reset");
   }
   function pomoKnob(dir) {
     const p = S.p;

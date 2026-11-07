@@ -40,7 +40,7 @@ A Toggl time tracker for the [Waveshare ESP32-S3-Knob-Touch-LCD-1.8](https://www
 | Do this | Mode | What happens |
 |---|---|---|
 | Tap the screen | Both | Start, pause, resume. Pomodoro: dismisses "time's up" |
-| Hold 0.7 s | Both | Reset. Tracking: to 00:00; Pomodoro: to the length you set |
+| Hold 0.7 s | Both | Reset. Tracking: to 00:00; Pomodoro: to the length you set. Also clears the task ("Untitled") and the project ("No project") |
 | Turn the knob | Tracking, running | Clockwise adds a minute, anticlockwise takes one off (the Toggl entry follows) |
 | Turn the knob | Pomodoro | Reset: sets the length (1–60). Paused: to the next whole minute up or down. Running: locked ("pause to adjust") |
 | Tap the **task** | Both | Recent Toggl entries ("Untitled" on top); turn to scroll, tap to choose |

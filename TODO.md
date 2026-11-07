@@ -25,8 +25,8 @@ These UX problems come from a review of the controls on 2026-11-01. None of them
   - Fix: give the pill a larger target of a fixed size (for example x 90–270, y 34–90). Start the task box at y 88. Add a dead band around both targets that gives a bump and does nothing else.
   - Where: `tap()` and `in_pill()` in `firmware/main/main.c`, `tapAt()` in the preview.
 - [ ] **Do not let a knob turn cause a hold.**
-  - A hold of 0.7 s resets the timer from all positions on the screen.
-  - If a finger touches the glass while the knob turns, the press does not move. After 0.7 s it becomes a hold and resets the timer. This is not confirmed on the device.
+  - A hold of 0.7 s resets the timer and clears the task and the project, from all positions on the screen.
+  - If a finger touches the glass while the knob turns, the press does not move. After 0.7 s it becomes a hold, resets the timer and clears the task and the project. This is not confirmed on the device.
   - Fix: cancel the press when a knob step arrives during the press. Ignore presses that start less than approximately 300 ms after a knob step.
   - Where: `input.c` and the main loop in `firmware/main/main.c`.
 - [ ] **Give feedback for gestures that do nothing.**
@@ -37,7 +37,7 @@ These UX problems come from a review of the controls on 2026-11-01. None of them
 - [ ] **Add a "Quick start" section at the top of the user guide.**
   - The guide tells the user to pause before they unplug the knob, but this information is near the end.
   - The section must include: tap to start or pause, hold to reset, tap the task or the pill to choose, the mic, swipe up for Pomodoro, and "pause before you unplug, or swipe down before you start".
-  - Also say that a hold resets from all positions, also on the task and the pill.
+  - Also say that a hold resets from all positions, also on the task and the pill, and that it clears the task and the project.
 
 ## Changes to design decisions
 

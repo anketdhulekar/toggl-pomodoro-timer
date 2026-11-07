@@ -660,6 +660,49 @@ def R5(r):
     return ok, f"{a['time']} at 62 px (track-hours.png), {b['time']} under an hour"
 
 
+def R6(r):
+    """A hold also clears the task and the project, in both modes."""
+    k = r.k
+    r.offline()
+    proj = r.projects[0] if r.projects else None
+    cleared_log = r"hold: task and project cleared"
+
+    def set_up(task):
+        k.cmd("task " + task)
+        k.cmd(f"project {proj['id']}" if proj else "project 999999 #3366CC knob-test unlisted")
+
+    def cleared(s):
+        return s["mode"] == "idle" and s["task"] == "" and s["project_id"] == 0 and s["project"] == ""
+
+    r.idle("track")
+    set_up("knob-test R6 tracking")
+    k.send("s")
+    time.sleep(0.5)
+    k.send("r")
+    a = k.state()  # from running
+    j = k.mark()
+    k.send("r")
+    b = k.state()  # nothing left to clear: only a bump
+    b_quiet = not any(re.search(cleared_log, l) for l in k.since(j))
+    j = k.mark()
+    set_up("knob-test R6 at rest")
+    k.send("r")
+    c = k.state()  # at rest, with a task and a project
+    c_log = bool(k.wait(cleared_log, 2, since=j))
+    r.idle("pomo", length=25)
+    set_up("knob-test R6 pomodoro")
+    k.send("s")
+    time.sleep(1.2)
+    k.send("s")
+    k.send("r")
+    d = k.state()  # Pomodoro, from paused
+    ok = (cleared(a) and a["time"] == "00:00" and cleared(b) and b_quiet and cleared(c) and c_log
+          and cleared(d) and d["remaining_s"] == 25 * 60)
+    return ok, (f"Tracking from running: {a['time']}, task {a['task']!r}, project {a['project_id']}; a second hold "
+                f"changed nothing: {b_quiet}; at rest with a task: cleared {c_log}; Pomodoro from paused: "
+                f"{d['time']}, task {d['task']!r}, project {d['project_id']}")
+
+
 def P1(r):
     k = r.k
     r.offline()
@@ -1134,7 +1177,7 @@ CASES = [("B1", B1), ("B2", B2), ("B3", B3),
          ("D1", D1), ("D2", D2), ("D3", D3), ("D4", D4),
          ("L1", L1), ("L2", L2), ("L3", L3), ("L4", L4), ("L5", L5), ("L6", L6), ("L7", L7), ("G1", G1),
          # Offline block: nothing below reaches Toggl until Wi-Fi comes back.
-         ("M1", M1), ("M2", M2), ("M3", M3), ("R1-R3", R1_R3), ("R4", R4), ("R5", R5),
+         ("M1", M1), ("M2", M2), ("M3", M3), ("R1-R3", R1_R3), ("R4", R4), ("R5", R5), ("R6", R6),
          ("P1", P1), ("P2", P2), ("P3", P3), ("P4", P4), ("P5", P5), ("P6", P6), ("P7", P7), ("P8", P8), ("H1", H1),
          ("L8", L8),
          ("V1-V2", V1_V2), ("V3", V3), ("V4", V4),

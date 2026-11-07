@@ -92,6 +92,7 @@ The harness prints `PASS` or `FAIL` for each case, with a short detail line, and
 | R3 | **Reset.** Holds while running. Starts again, pauses and holds. Holds once more while reset. | Every hold leaves it reset at 00:00, and the hold while reset changes nothing. |
 | R4 | **Knob adjusts.** Turns the knob while reset. Starts the timer, then turns 3 clicks clockwise, 2 anticlockwise and 2 more anticlockwise. Pauses and turns again. | Reset: no change. Running: +3 clicks add 3 minutes, −2 take 2 off, and the last −2 stop at the start of the running stretch. Paused: no change. |
 | R5 | **Hours.** Sets the total to 1:02:05 (`#session 3725`) and captures. Then sets it to 59 s. | It shows "01:02:05" in the smaller digits (wider than MM:SS), and "00:59" under an hour. |
+| R6 | **A hold clears the task and the project.** Tracking: sets the task "knob-test R6 tracking" and your first project, taps, waits 0.5 s and holds. Holds again. Sets a task and a project while reset and holds. Pomodoro (25 min): sets a task and a project, taps, waits 1.2 s, taps and holds. | Every hold leaves the timer reset (00:00, or 25:00), the task empty and "No project" (id 0). The second Tracking hold changes nothing. The hold while reset with a task clears it. |
 
 ## Pomodoro (offline)
 

@@ -72,7 +72,7 @@ Proposed changes that the owner has not decided yet are in `TODO.md`. Don't star
 - **Knob**
   - Tracking, running: clockwise adds a minute (the start moves a minute earlier), anticlockwise takes one off, never past the start of the running stretch. **No hint text.** Not running: a bump.
   - Pomodoro: sets the length while reset; while paused, each click goes to the neighbouring whole minute (24:58 → 25:00 or 24:00); locked while running.
-- **Gestures:** hold = reset **only** (voice moved off hold because it fired when the owner meant to reset). Tap the task: past tasks list. Tap the pill: projects list. Swipe down: Tracking only, sync with Toggl.
+- **Gestures:** hold = reset **only** (voice moved off hold because it fired when the owner meant to reset). In both modes, a hold also clears the task ("Untitled", task id 0) and sets "No project" (id 0, not the -1 default that becomes "Work"); it stops a running entry first, so nothing else goes to Toggl. At rest with nothing to clear, it only bumps (`task_project_cleared`, `clear_task_project`). Tap the task: past tasks list. Tap the pill: projects list. Swipe down: Tracking only, sync with Toggl.
 - **Mic hit area:** radius 34 px. The 44 px dead zone applies only below the status line (y > 243): a near miss bumps and does nothing.
 - **Lists**
   - Past tasks: "Untitled" on top, then recent entries deduped by (description, project), newest first, fetched fresh on every open (at most 50, last 30 days), opening on row 1. Picking one while tracking switches entries (the counter keeps going); in a running Pomodoro it renames the entry. Picking the task that's already set changes nothing (no split entry). While the list is loading or failed, a tap only closes it ("Untitled" is a placeholder there).

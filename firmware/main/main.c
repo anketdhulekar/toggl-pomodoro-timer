@@ -198,6 +198,19 @@ static const project_t *find_project(int64_t id)
     return NULL;
 }
 
+// A hold also clears the task ("Untitled") and the project ("No project"), in both modes.
+// Call it after the running entry is stopped: nothing goes to Toggl.
+static bool task_project_cleared(void) { return !S.task[0] && !S.task_id && S.project.id == 0; }
+
+static void clear_task_project(int64_t now)
+{
+    S.task[0] = '\0';
+    S.task_id = 0;
+    memset(&S.project, 0, sizeof S.project); // id 0: chosen "No project" (not -1, which becomes "Work")
+    mark_dirty(now);
+    ESP_LOGI(TAG, "hold: task and project cleared");
+}
+
 // Pick up a reloaded project list; keep the selection's name and color current.
 static void sync_projects(int64_t now)
 {
@@ -429,13 +442,14 @@ static void track_tap(int64_t now)
 
 static void track_hold(int64_t now)
 {
-    if (S.t_state == RUN_IDLE) {
+    if (S.t_state == RUN_IDLE && task_project_cleared()) {
         bump(-1, now);
         return;
     }
     if (S.t_state == RUN_RUNNING) cloud_session_stop(now);
     S.t_state = RUN_IDLE;
     S.t_session_us = 0;
+    clear_task_project(now);
     show_hint(STR_RESET, now, HINT_US);
     haptics_play(HAP_DOUBLE);
 }
@@ -556,12 +570,13 @@ static void pomo_tap(int64_t now)
 
 static void pomo_hold(int64_t now)
 {
-    if (S.p_state == RUN_IDLE) {
+    if (S.p_state == RUN_IDLE && task_project_cleared()) {
         bump(-1, now);
         return;
     }
     if (S.p_state == RUN_RUNNING) cloud_session_stop(now);
     pomo_reset();
+    clear_task_project(now);
     show_hint(STR_RESET, now, HINT_US);
     haptics_play(HAP_DOUBLE);
 }
