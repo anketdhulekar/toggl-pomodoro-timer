@@ -67,6 +67,7 @@ Proposed changes that the owner has not decided yet are in `TODO.md`. Don't star
   - Fade from the ink color to Leuchtorange (#FF4D06) at 5:00, then to crimson (#E8143A) at 1:00, interpolated in OKLCH. A fade must never sweep through purple (hue 285–345°) unless it starts there.
   - In the last minute the **time pulses** (swell plus glow). No blinking, no rings.
   - Time's up vibrates continuously at full intensity for **30 s** (DRV2605 real-time playback at full scale, `haptics_buzz`); any touch or knob turn stops it early. The owner couldn't feel the old single burst. Other feedback (a sync result, say) doesn't interrupt it: `haptics_play` is skipped while it buzzes. Don't raise the driver's voltage clamp without asking: 30 s continuous could overheat the motor.
+  - Knob detents play a soft tick (library effect 26, "Sharp Tick 3", 60 %), at most one per 40 ms (`CLICK_GAP_US`). On battery, a full-strength tick per detent dipped the supply and made the backlight flicker during a turn; on USB power it didn't. Don't make the detent tick stronger without checking this on battery.
   - Time's up closes an open list, so the face shows "time's up" and the silencing tap can't pick a row.
 - **Knob**
   - Tracking, running: clockwise adds a minute (the start moves a minute earlier), anticlockwise takes one off, never past the start of the running stretch. **No hint text.** Not running: a bump.

@@ -5,6 +5,7 @@
 
 #include "board.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 
 static const char *TAG = "haptics";
 
@@ -26,9 +27,14 @@ enum {
 
 #define WAIT_MS(ms) (0x80 | ((ms) / 10))
 
+// Each motor kick draws a pulse of current. On battery, a full-strength tick per knob
+// detent dipped the supply enough to make the backlight flicker during a turn. So
+// detents use a softer tick, and at most one starts per CLICK_GAP_US.
+#define CLICK_GAP_US 40000
+
 // Effect numbers from the DRV2605 ERM waveform library; 0 ends a sequence.
 static const uint8_t SEQS[HAP_COUNT][8] = {
-    [HAP_CLICK] = {24},                                                // Sharp Tick 1
+    [HAP_CLICK] = {26},                                                // Sharp Tick 3 (60%)
     [HAP_BUMP] = {7},                                                  // Soft Bump
     [HAP_TAP] = {1},                                                   // Strong Click
     [HAP_DOUBLE] = {10},                                               // Double Click
@@ -103,6 +109,12 @@ void haptics_play(haptic_t h)
     // While the time's-up buzz runs, other feedback (a list closing by itself, a sync
     // result) is skipped. Touches and knob turns stop the buzz first, so theirs still plays.
     if (!s_ok || h >= HAP_COUNT || s_buzzing) return;
+    if (h == HAP_CLICK) { // a fast spin: skip ticks that would restart the motor right away
+        static int64_t last_click_us = -CLICK_GAP_US;
+        const int64_t now = esp_timer_get_time();
+        if (now - last_click_us < CLICK_GAP_US) return;
+        last_click_us = now;
+    }
     wr(REG_GO, 0);
     for (int i = 0; i < 8; i++) {
         wr(REG_WAVESEQ1 + i, SEQS[h][i]);

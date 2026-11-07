@@ -53,7 +53,7 @@ When you press and hold, a thin gray ring fills around the middle of the screen.
 - **Near misses on the mic.** A tap that just misses the mic (within about 10 px of it, below the status line) gives a bump and does nothing else, so a near miss never starts the timer. A tap on the status line itself is a normal tap.
 - **While you're speaking** (the waveform is showing), any tap stops listening. Hold and swipe up and down are ignored.
 - **During time's up**, any touch or knob turn first stops the vibration.
-- **The knob clicks back.** You feel a click for each step, a bump at a limit or when something isn't available, a firm tap for start, pause and changes, and a double pulse for a reset.
+- **The knob clicks back.** You feel a light click for each step (a fast spin skips some), a bump at a limit or when something isn't available, a firm tap for start, pause and changes, and a double pulse for a reset.
 
 ## Tracking mode
 
