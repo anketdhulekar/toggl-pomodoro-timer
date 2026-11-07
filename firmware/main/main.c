@@ -108,16 +108,20 @@ static struct {
     project_t list[MAX_PROJECTS];
     int count;
     uint32_t version;
-    toggl_entry_t *entries; // PSRAM
+    toggl_entry_t *entries; // PSRAM; copied from the cache when the tasks list opens
     int nentries;
-    entries_state_t entries_state;
+    entries_state_t sync; // the open list's "Sync from Toggl": idle, loading (syncing), ok or failed
     bool open;
     pick_mode_t mode;
-    int idx;      // tasks: 0 = "Untitled", i = entries[i - 1]; projects: list[idx], count = "No project"
+    int idx;      // ROW_SYNC, ROW_NONE ("Untitled" / "No project"), or ROW_FIRST + i: entries[i] / list[i]
     float pos;    // scroll position, glides toward idx
     bool touched; // the knob moved since the list opened
     int64_t until;
 } P;
+
+// List rows: "Sync from Toggl" on top, then "Untitled" or "No project" (where the cursor
+// starts), then the cached tasks or projects.
+enum { ROW_SYNC, ROW_NONE, ROW_FIRST };
 
 static bool s_force_render; // redraw even if the scene looks unchanged (e.g. after a list)
 static int s_status = -1;   // the status line last shown (debug)
@@ -148,6 +152,20 @@ static void quiet(void)
 static int64_t proj_id(void) { return S.project.id > 0 ? S.project.id : 0; }
 static run_t run_state(void) { return S.app == APP_TRACK ? S.t_state : S.p_state; }
 static bool running(void) { return run_state() == RUN_RUNNING; }
+
+// Start or rename the knob's Toggl entry. The task also goes to the top of the cached
+// recent-tasks list, so the list shows it without a sync.
+static void entry_start(int64_t now)
+{
+    cloud_session_start(S.task, proj_id(), S.task_id, now);
+    cloud_remember_entry(S.task, S.task_id, &S.project);
+}
+
+static void entry_update(void)
+{
+    cloud_session_update(S.task, proj_id(), S.task_id);
+    cloud_remember_entry(S.task, S.task_id, &S.project);
+}
 static int64_t track_elapsed(int64_t now)
 {
     return S.t_session_us + (S.t_state == RUN_RUNNING ? now - S.t_start_us : 0);
@@ -186,7 +204,7 @@ static void set_project(const project_t *p, bool push, int64_t now)
     if (p) S.project = *p;
     else memset(&S.project, 0, sizeof S.project);
     mark_dirty(now);
-    if (push && running()) cloud_session_update(S.task, proj_id(), S.task_id);
+    if (push && running()) entry_update();
     ESP_LOGI(TAG, "project: %s", S.project.id > 0 ? S.project.name : "none");
 }
 
@@ -218,12 +236,12 @@ static void sync_projects(int64_t now)
     if (v == P.version) return;
     // An open projects list keeps its highlighted project (by id) when the list reloads.
     const bool listing = P.open && P.mode == PICK_PROJECTS;
-    const int64_t highlighted = listing && P.idx < P.count ? P.list[P.idx].id : 0;
+    const int64_t highlighted = listing && P.idx >= ROW_FIRST ? P.list[P.idx - ROW_FIRST].id : 0;
     P.count = cloud_projects(P.list, MAX_PROJECTS, &P.version);
-    if (listing) {
-        P.idx = P.count; // "No project"
-        for (int i = 0; i < P.count && highlighted; i++) {
-            if (P.list[i].id == highlighted) P.idx = i;
+    if (highlighted) {
+        P.idx = ROW_NONE; // (in case it's gone)
+        for (int i = 0; i < P.count; i++) {
+            if (P.list[i].id == highlighted) P.idx = ROW_FIRST + i;
         }
         P.pos = (float)P.idx;
     }
@@ -262,62 +280,80 @@ static void pick_task(const char *text, int64_t task_id, const project_t *proj, 
     if (S.app == APP_TRACK && S.t_state == RUN_RUNNING) {
         S.t_session_us += now - S.t_start_us;
         S.t_start_us = now;
-        cloud_session_start(S.task, proj_id(), S.task_id, now); // (stops the running entry)
+        entry_start(now); // (stops the running entry)
     } else if (running()) {
-        cloud_session_update(S.task, proj_id(), S.task_id);
+        entry_update();
     }
     ESP_LOGI(TAG, "task from the list: \"%s\"", S.task[0] ? S.task : "(untitled)");
 }
 
 // ---- Lists ----------------------------------------------------------------------
 
-static void list_show(pick_mode_t mode, int idx, int64_t now)
+static void list_show(pick_mode_t mode, int64_t now)
 {
     P.mode = mode;
-    P.idx = idx;
-    P.pos = (float)idx;
+    P.idx = ROW_NONE;
+    P.pos = (float)ROW_NONE;
     P.touched = false;
+    P.sync = ENTRIES_IDLE;
     P.open = true;
     P.until = now + PICKER_IDLE_US;
     haptics_play(HAP_TAP);
 }
 
-// Tap the pill: the projects, sorted by name, "No project" last.
+// Tap the pill: the cached projects, sorted by name. Opening sends nothing to Toggl.
 static void projects_open(int64_t now)
 {
     if (!cloud_toggl_configured()) {
         bump(STR_TOGGL_OFF, now);
         return;
     }
-    cloud_refresh_projects();
-    int idx = P.count; // "No project"
-    for (int i = 0; i < P.count; i++) {
-        if (P.list[i].id == S.project.id) idx = i;
-    }
-    list_show(PICK_PROJECTS, idx, now);
+    list_show(PICK_PROJECTS, now);
 }
 
-// Tap the task: recent entries, fetched fresh every time.
+// Tap the task: the cached recent tasks, newest first. Opening sends nothing to Toggl.
 static void tasks_open(int64_t now)
 {
     if (!cloud_toggl_configured()) {
         bump(STR_TOGGL_OFF, now);
         return;
     }
-    P.entries_state = cloud_fetch_entries() ? ENTRIES_LOADING : ENTRIES_FAILED;
-    P.nentries = 0;
-    list_show(PICK_TASKS, 0, now);
+    cloud_entries(P.entries, MAX_ENTRIES, &P.nentries);
+    list_show(PICK_TASKS, now);
 }
 
-static void entries_update(int64_t now)
+// "Sync from Toggl": reload the open list (one request). The list stays open on "syncing…".
+static void list_sync(int64_t now)
 {
-    if (!P.open || P.mode != PICK_TASKS || P.entries_state != ENTRIES_LOADING) return;
-    const entries_state_t st = cloud_entries(P.entries, MAX_ENTRIES, &P.nentries);
-    if (st == ENTRIES_LOADING) return;
-    P.entries_state = st;
+    if (P.sync == ENTRIES_LOADING) {
+        bump(-1, now);
+        return;
+    }
+    const bool queued = P.mode == PICK_TASKS ? cloud_fetch_entries() : cloud_sync_projects();
+    P.sync = queued ? ENTRIES_LOADING : ENTRIES_FAILED;
     P.until = now + PICKER_IDLE_US;
-    if (st == ENTRIES_FAILED) haptics_play(HAP_BUMP);
-    if (st == ENTRIES_OK && P.nentries && !P.touched) P.idx = 1; // the newest entry; "Untitled" is one click up
+    if (queued) haptics_play(HAP_CLICK);
+    else bump(-1, now);
+}
+
+// A sync finished. On success the list shows the new rows and looks as if it just opened
+// (the cursor on "Untitled" / "No project"); on failure it says "couldn't reach Toggl".
+static void list_sync_update(int64_t now)
+{
+    if (!P.open || P.sync != ENTRIES_LOADING) return;
+    int n;
+    const entries_state_t st = P.mode == PICK_TASKS ? cloud_entries(NULL, 0, &n) : cloud_projects_state();
+    if (st == ENTRIES_LOADING) return;
+    P.sync = st;
+    P.until = now + PICKER_IDLE_US;
+    if (st != ENTRIES_OK) {
+        haptics_play(HAP_BUMP);
+        return;
+    }
+    if (P.mode == PICK_TASKS) cloud_entries(P.entries, MAX_ENTRIES, &P.nentries); // (projects: sync_projects)
+    P.idx = ROW_NONE;
+    P.touched = false;
+    haptics_play(HAP_TAP);
 }
 
 static void picker_close(bool choose, int64_t now)
@@ -325,24 +361,29 @@ static void picker_close(bool choose, int64_t now)
     P.open = false;
     s_force_render = true;
     haptics_play(HAP_TAP);
-    if (!choose) return;
+    // Without a turn of the knob, a tap only closes the list: a reflex tap mustn't change
+    // the task or the project (the list opens on "Untitled" / "No project").
+    if (!choose || !P.touched || P.idx == ROW_SYNC) return;
     if (P.mode == PICK_PROJECTS) {
-        // With nothing loaded, or without a turn of the knob, a tap keeps the project: a
-        // reflex tap mustn't clear it (the list opens on "No project" for an unlisted one).
-        if (!P.count || !P.touched) return;
-        const project_t *p = P.idx < P.count ? &P.list[P.idx] : NULL;
+        if (P.idx >= ROW_FIRST + P.count) return; // (the list got shorter)
+        const project_t *p = P.idx >= ROW_FIRST ? &P.list[P.idx - ROW_FIRST] : NULL;
         if ((p ? p->id : 0) == proj_id() && S.project.id >= 0) return; // unchanged
         S.task_id = 0; // a Toggl task belongs to its project
         set_project(p, true, now);
-    } else if (P.entries_state != ENTRIES_OK) {
-        return; // still loading, or it failed: "Untitled" is only a placeholder
-    } else if (P.idx == 0) {
+    } else if (P.idx == ROW_NONE) {
         pick_task("", 0, NULL, false, now); // "Untitled"
-    } else if (P.idx <= P.nentries) {
-        const toggl_entry_t *e = &P.entries[P.idx - 1];
+    } else if (P.idx - ROW_FIRST < P.nentries) {
+        const toggl_entry_t *e = &P.entries[P.idx - ROW_FIRST];
         const project_t *p = e->project.id ? find_project(e->project.id) : NULL;
         pick_task(e->label, e->task_id, p ? p : (e->project.id ? &e->project : NULL), true, now);
     }
+}
+
+// A tap while a list is open: sync on "Sync from Toggl", otherwise close (choosing the row).
+static void list_tap(int64_t now)
+{
+    if (P.idx == ROW_SYNC) list_sync(now);
+    else picker_close(true, now);
 }
 
 // ---- Voice ----------------------------------------------------------------------
@@ -414,7 +455,7 @@ static void voice_update(int64_t now)
         // Naming a project selects it ("Acme design review" -> Acme).
         const project_t *p = find_project(cloud_match_project(S.task));
         if (p && p->id != S.project.id) set_project(p, false, now);
-        if (running()) cloud_session_update(S.task, proj_id(), S.task_id); // renames the running entry
+        if (running()) entry_update(); // renames the running entry
         break;
     }
     case STT_NO_SPEECH: voice_fail(STR_NOT_HEARD, now); break;
@@ -435,7 +476,7 @@ static void track_tap(int64_t now)
         if (S.t_state == RUN_IDLE) S.t_session_us = 0;
         S.t_start_us = now;
         S.t_state = RUN_RUNNING;
-        cloud_session_start(S.task, proj_id(), S.task_id, now);
+        entry_start(now);
     }
     haptics_play(HAP_TAP);
 }
@@ -558,7 +599,7 @@ static void pomo_tap(int64_t now)
 {
     if (S.p_state == RUN_IDLE || S.p_state == RUN_PAUSED) {
         S.p_state = RUN_RUNNING;
-        cloud_session_start(S.task, proj_id(), S.task_id, now);
+        entry_start(now);
     } else if (S.p_state == RUN_RUNNING) {
         S.p_state = RUN_PAUSED;
         cloud_session_stop(now);
@@ -620,8 +661,9 @@ static void turn(int dir, int64_t now)
     if (P.open) {
         P.until = now + PICKER_IDLE_US;
         P.touched = true;
+        if (P.sync == ENTRIES_FAILED) P.sync = ENTRIES_IDLE; // the error hint goes with the next turn
         const int i = P.idx + dir;
-        const int last = P.mode == PICK_PROJECTS ? P.count : P.nentries;
+        const int last = ROW_FIRST - 1 + (P.mode == PICK_PROJECTS ? P.count : P.nentries);
         if (i < 0 || i > last) {
             bump(-1, now);
             return;
@@ -650,7 +692,7 @@ static void tap(int64_t now)
 {
     quiet();
     if (P.open) {
-        picker_close(true, now);
+        list_tap(now);
         return;
     }
     if (S.voice == VOICE_LISTENING) {
@@ -765,7 +807,7 @@ static const char *const RUNS[] = {"idle", "running", "paused", "done"};
 static void state_dump(void)
 {
     static const char *const VOICES[] = {"idle", "listening", "waiting"};
-    static const char *const ENTRIES[] = {"idle", "loading", "ok", "failed"};
+    static const char *const SYNCS[] = {"idle", "syncing", "ok", "failed"};
     const int64_t now = esp_timer_get_time();
     char t[9];
     shown_time(now, t);
@@ -791,7 +833,7 @@ static void state_dump(void)
     cJSON_AddNumberToObject(j, "list_idx", P.idx);
     cJSON_AddNumberToObject(j, "projects", P.count);
     cJSON_AddNumberToObject(j, "entries", P.nentries);
-    cJSON_AddStringToObject(j, "entries_state", ENTRIES[P.entries_state]);
+    cJSON_AddStringToObject(j, "list_sync", SYNCS[P.sync]);
     cJSON_AddBoolToObject(j, "syncing", S.syncing);
     cJSON_AddStringToObject(j, "status", s_status >= 0 && s_status < STR_COUNT ? STRING_TEXT[s_status] : "");
     cJSON_AddNumberToObject(j, "toggl_entry", (double)cloud_running_entry());
@@ -858,6 +900,7 @@ static void capture_send(const scene_t *sc, const picker_view_t *pv)
 // Debug: the project and entry lists as JSON ("PROJECTS [...]", "ENTRIES [...]").
 static void list_dump(void)
 {
+    if (!P.open) cloud_entries(P.entries, MAX_ENTRIES, &P.nentries); // (the cache, when no list shows it)
     cJSON *a = cJSON_CreateArray();
     for (int i = 0; i < P.count; i++) {
         cJSON *o = cJSON_CreateObject();
@@ -1071,7 +1114,7 @@ static void serial_commands(int64_t now)
         case 'd': state_dump(); break;
         case 'c': s_want_capture = true; break;
         case 't':
-            if (P.open) picker_close(true, now);
+            if (P.open) list_tap(now);
             else if (S.voice == VOICE_LISTENING) listen_stop(now);
             break;
         default: break;
@@ -1215,7 +1258,7 @@ void app_main(void)
         if (cloud_take_dropped()) bump(STR_NOT_SAVED, now);
         voice_update(now);
         sync_projects(now);
-        entries_update(now);
+        list_sync_update(now);
         sync_update(now);
         if (P.open && now > P.until) picker_close(false, now);
 
@@ -1238,33 +1281,38 @@ void app_main(void)
         if (P.open) {
             P.pos += (P.idx - P.pos) * (1 - expf(-dt_ms / 70));
             if (fabsf(P.idx - P.pos) < 0.002f) P.pos = (float)P.idx;
-            const int content = P.mode == PICK_PROJECTS ? P.count : P.nentries * 4 + P.entries_state;
+            const int content = (P.mode == PICK_PROJECTS ? P.count : P.nentries) * 4 + P.sync;
             if (P.pos != pk_drawn_pos || P.idx != pk_drawn_idx || content != pk_drawn_count || S.theme != pk_drawn_theme) {
                 pv.theme = S.theme;
+                memset(pv.hollow, 0, sizeof pv.hollow);
+                memset(pv.action, 0, sizeof pv.action);
+                pv.names[ROW_SYNC] = "Sync from Toggl";
+                pv.action[ROW_SYNC] = true;
+                pv.hollow[ROW_NONE] = true;
+                int n;
                 if (P.mode == PICK_PROJECTS) {
-                    pv.count = P.count + 1;
-                    for (int i = 0; i < P.count; i++) {
-                        pv.names[i] = P.list[i].name;
-                        pv.colors[i] = P.list[i].color;
-                        pv.hollow[i] = false;
+                    n = P.count;
+                    pv.names[ROW_NONE] = "No project";
+                    for (int i = 0; i < n; i++) {
+                        pv.names[ROW_FIRST + i] = P.list[i].name;
+                        pv.colors[ROW_FIRST + i] = P.list[i].color;
                     }
-                    pv.names[P.count] = "No project";
-                    pv.hollow[P.count] = true;
-                    pv.hint = P.count ? STR_TAP_TO_CHOOSE : STR_NO_PROJECTS;
                 } else {
-                    pv.count = P.nentries + 1;
-                    pv.names[0] = "Untitled";
-                    pv.hollow[0] = true;
-                    for (int i = 0; i < P.nentries; i++) {
-                        pv.names[i + 1] = P.entries[i].label;
-                        pv.colors[i + 1] = P.entries[i].project.color;
-                        pv.hollow[i + 1] = !P.entries[i].project.id;
+                    n = P.nentries;
+                    pv.names[ROW_NONE] = "Untitled";
+                    for (int i = 0; i < n; i++) {
+                        pv.names[ROW_FIRST + i] = P.entries[i].label;
+                        pv.colors[ROW_FIRST + i] = P.entries[i].project.color;
+                        pv.hollow[ROW_FIRST + i] = !P.entries[i].project.id;
                     }
-                    pv.hint = P.entries_state == ENTRIES_LOADING ? STR_LOADING
-                              : P.entries_state == ENTRIES_FAILED ? STR_TOGGL_ERROR
-                              : P.nentries ? STR_TAP_TO_CHOOSE
-                                           : STR_NO_ENTRIES;
                 }
+                pv.count = ROW_FIRST + n;
+                pv.hint = P.sync == ENTRIES_LOADING  ? STR_SYNCING
+                          : P.sync == ENTRIES_FAILED ? STR_TOGGL_ERROR
+                          : P.idx == ROW_SYNC        ? STR_TAP_TO_SYNC
+                          : n                        ? STR_TAP_TO_CHOOSE
+                          : P.mode == PICK_PROJECTS  ? STR_NO_PROJECTS
+                                                     : STR_NO_ENTRIES;
                 pv.selected = P.idx;
                 pv.pos = P.pos;
                 render_picker(&pv);

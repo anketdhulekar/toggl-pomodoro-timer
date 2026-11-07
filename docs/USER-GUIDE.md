@@ -40,7 +40,7 @@ When you press and hold, a thin gray ring fills around the middle of the screen.
 
 | Do this | Tracking | Pomodoro | In a list |
 |---|---|---|---|
-| **Tap the screen** | Start, pause, resume | Start, pause, resume. At time's up: back to the set length | Choose the highlighted row (see [lists](#your-task-and-project)) |
+| **Tap the screen** | Start, pause, resume | Start, pause, resume. At time's up: back to the set length | After a turn: choose the highlighted row. On "Sync from Toggl": reload the list. Without a turn: close (see [lists](#your-task-and-project)) |
 | **Hold 0.7 s** | Reset to 00:00, clear the task and the project | Reset to the set length, clear the task and the project | Nothing |
 | **Turn the knob** | Running: each click moves the start a minute (clockwise = more time). Stopped: a bump | Reset: set the length (1–60 min). Paused: whole minutes. Running: locked | Scroll |
 | **Tap the task** | Past tasks list | Past tasks list | (Choose) |
@@ -108,35 +108,39 @@ The Pomodoro rim always sits on a black band with gray ticks, in both color prof
 
 ## Your task and project
 
+Both lists come from a copy on the knob, so they open at once, also offline, and opening them sends nothing to Toggl. The copy stays after a restart. The knob loads the lists from Toggl once, on the first start, and after that only when you choose **Sync from Toggl**.
+
+Both lists work the same way:
+
+- **"Sync from Toggl"** is the top row, in gray. Below it is "Untitled" (past tasks) or "No project" (projects). The list opens there.
+- **Turn, then tap** to choose. A tap without a turn of the knob only closes the list, so a quick tap never changes your task or project.
+- **To reload a list,** turn up to "Sync from Toggl" ("tap to sync") and tap. The list stays open and shows "syncing…". When the new rows arrive, the list goes back to "Untitled" or "No project". If Toggl can't be reached, the list says "couldn't reach Toggl" until the next turn.
+- **Swipe up or down** to close without changing anything. A list also closes by itself after 10 seconds without input.
+
 ### Past tasks
 
 **Tap the task** to open your recent Toggl entries.
 
-<p align="center"><img src="assets/user-guide/past-tasks.png" width="260" alt="The past-tasks list: Untitled, Write the Q4 plan (selected), Acme design review, Inbox zero, with 'tap to choose' at the bottom"></p>
+<p align="center"><img src="assets/user-guide/past-tasks.png" width="260" alt="The past-tasks list: Sync from Toggl in gray, Untitled (selected), Write the Q4 plan, Acme design review, with 'tap to choose' at the bottom"></p>
 
-- "Untitled" is always on top. Below it are your finished entries from the last 30 days, newest first. The same name with the same project appears only once.
-- The list is fetched fresh from Toggl every time you open it ("loading…"), and opens on the newest entry.
-- Each row has a dot in its project's color, or a hollow ring for no project. Long names end in "…".
-- **Turn** to scroll and **tap** to choose. Choosing sets the task *and* that entry's project.
+- Below "Untitled" are your last 20 entries, newest first. The same name with the same project appears only once. Each row has a dot in its project's color, or a hollow ring for no project. Long names end in "…".
+- A task that you start or rename on the knob moves to the top of the list right away, without a sync. Entries that you make on another device appear after "Sync from Toggl".
+- Choosing a task sets the task *and* that entry's project.
   - **While tracking:** the current entry stops and a new one starts with the chosen task. The counter keeps going.
   - **In a running Pomodoro:** the running entry is renamed.
   - Choosing the task you already have changes nothing, so no new entry starts.
 - **"Untitled"** clears the task and keeps the project.
-- **Swipe up or down** to close without changing anything. A list also closes by itself after 10 seconds without input.
-
-The entry that's running right now isn't in the list. While the list is still loading, or if it couldn't load ("couldn't reach Toggl"), a tap just closes it.
 
 ### Projects
 
 **Tap the pill** to choose a project.
 
-<p align="center"><img src="assets/user-guide/projects-list.png" width="260" alt="The projects list with Deep work selected between Client portal and Hiring"></p>
+<p align="center"><img src="assets/user-guide/projects-list.png" width="260" alt="The projects list: Sync from Toggl in gray, No project (selected), Acme, Admin, with 'tap to choose' at the bottom"></p>
 
-- Your Toggl projects, sorted by name, with "No project" last. It opens on the current project.
-- **Turn, then tap** to choose. A tap without turning the knob first keeps your project, so a quick tap to close the list never changes it.
+- Below "No project" are your Toggl projects, sorted by name.
 - Choosing one updates the running entry too. Changing the project drops any link to a Toggl task, since a task belongs to its project.
 - If you've never picked a project, the knob selects your project named **Work** (if you have one) once it has loaded your projects.
-- If the current project isn't in the list (an archived project, say), the list opens on "No project". Your project stays unless you turn and choose another. If the projects haven't loaded yet, the list says "no projects yet".
+- Your project stays even if it isn't in the list (an archived project, say), until you turn and choose another. If the knob has no projects yet, the list says "no projects yet".
 
 ### No project, no task, long tasks
 
@@ -173,7 +177,7 @@ Audio leaves the knob only when you tap the mic, and only to OpenAI for transcri
   - **"stopped in Toggl":** the knob's own timer was stopped elsewhere, or Toggl has no entry for it, so the knob pauses. Its total counts up to the moment you swiped.
   - **"in sync":** nothing to change.
   - **"couldn't reach Toggl":** the check failed. Try again in a moment.
-- **No background traffic.** The knob only talks to Toggl when you do something: start, pause, reset, change the task or project, open a list, or swipe down. Toggl's free plan allows only about 30 requests an hour. A start costs about 1 request, a pause 2, opening past tasks 1 and a swipe down 1. If Toggl says "too many requests", the knob waits and retries on its own, at most 10 minutes apart. Until then, swipe down and the lists say "couldn't reach Toggl" without asking again.
+- **No background traffic.** The knob only talks to Toggl when you do something: start, pause, reset, change the task or project, choose "Sync from Toggl", or swipe down. Toggl's free plan allows only about 30 requests an hour. A start costs about 1 request, a pause 2, a "Sync from Toggl" 1 and a swipe down 1. Opening a list costs nothing. If Toggl says "too many requests", the knob waits and retries on its own, at most 10 minutes apart. Until then, swipe down and "Sync from Toggl" say "couldn't reach Toggl" without asking again.
 
 ### Offline
 
@@ -201,7 +205,7 @@ The glyph at 6 o'clock shows the connection. It's steady when connected and fade
 
 <p align="center"><img src="assets/user-guide/wifi-reconnecting.png" width="260" alt="Tracking with the Wi-Fi glyph at 6 o'clock faded mid-pulse"></p>
 
-You can keep tracking without Wi-Fi (see [Offline](#offline)). Voice, past tasks and swipe-down sync need a connection. The projects list works offline from the copy loaded earlier, if the knob was online since it was switched on.
+You can keep tracking without Wi-Fi (see [Offline](#offline)). Voice, "Sync from Toggl" and swipe-down sync need a connection. Both lists work offline from the copy on the knob.
 
 ## Status messages
 
@@ -220,7 +224,7 @@ You can keep tracking without Wi-Fi (see [Offline](#offline)). Voice, past tasks
 | pomodoro | You switched to Pomodoro. |
 | mono | You switched to the Mono profile. |
 | inverted | You switched to the Inverted profile. |
-| syncing… | After a swipe down, while the knob asks Toggl what's running. |
+| syncing… | After a swipe down, while the knob asks Toggl what's running. In a list, while "Sync from Toggl" reloads it. |
 | synced from Toggl | A timer started elsewhere is now running on the knob. |
 | stopped in Toggl | The knob's timer was stopped elsewhere (or Toggl has no entry for it); the knob paused. |
 | in sync | The swipe-down check found nothing to change. |
@@ -228,12 +232,12 @@ You can keep tracking without Wi-Fi (see [Offline](#offline)). Voice, past tasks
 | didn't catch that | Nothing that sounded like speech, a recording under half a second, or an empty transcript. Nothing changed. |
 | no Wi-Fi | You tapped the mic while offline, or the connection dropped while sending the audio. |
 | transcription failed | The speech service returned an error (for example a bad key or no credit), or the mic couldn't start. |
-| tap to choose | At the bottom of a list: turn to scroll, tap to choose. |
-| loading… | At the bottom of the past-tasks list while it loads from Toggl. |
-| no recent entries | Past tasks loaded, but you have no finished entries from the last 30 days. |
-| no projects yet | The projects list is empty: Toggl hasn't connected yet (it takes about 5 s after power-on) or can't be reached. |
+| tap to choose | At the bottom of a list: turn to choose a row, then tap. |
+| tap to sync | At the bottom of a list, when "Sync from Toggl" is highlighted. |
+| no recent entries | The knob has no past tasks: you have no entries from the last 30 days, or the first load hasn't happened yet. |
+| no projects yet | The knob has no projects yet: on the first start, Toggl hasn't connected yet (it takes about 5 s after power-on) or can't be reached. Choose "Sync from Toggl" to try again. |
 | Toggl isn't set up | You tapped the task or pill, or swiped down, but no Toggl key (or no Wi-Fi network) is set. |
-| couldn't reach Toggl | The past tasks couldn't load (at the bottom of the list), or a swipe-down check failed (on the status line). |
+| couldn't reach Toggl | "Sync from Toggl" failed (at the bottom of the list, until the next turn), or a swipe-down check failed (on the status line). |
 | not saved in Toggl | Toggl turned down a start, a change or a stop for good, for example because the project was archived. The knob keeps counting; swipe down to see what Toggl has. |
 
 ## Troubleshooting
@@ -246,7 +250,8 @@ You can keep tracking without Wi-Fi (see [Offline](#offline)). Voice, past tasks
 | "couldn't reach Toggl" or "no projects yet" | Check the Wi-Fi glyph. Right after power-on, wait about 5 seconds. If it lasts, you may have hit Toggl's hourly limit (wait a while), or the organization id is missing ([README](../README.md#troubleshooting)). |
 | An entry is missing in Toggl | It ran under 10 seconds (deleted on purpose), it was queued offline and the knob restarted before Wi-Fi returned, or Toggl turned it down ("not saved in Toggl"). |
 | A Toggl entry kept running after unplugging | Swipe down to pick it up again, then pause. See [Restarts](#restarts-and-power-loss). |
-| The task changed when you only meant to close a list | Once past tasks have loaded, a tap chooses the highlighted row. Swipe up or down to close without choosing. (In the projects list, a tap only chooses after you've turned the knob.) |
+| A new project or past entry isn't in the list | The lists are a copy on the knob. Turn up to "Sync from Toggl" and tap. |
+| The task changed when you only meant to close a list | A tap chooses the highlighted row only after you turn the knob. Without a turn, a tap closes the list. Swipe up or down to close without choosing. |
 | "didn't catch that" | Speak within about an arm's length and pause when you're done. Talking nearby keeps it listening for up to 15 s. |
 | The time is orange before a Pomodoro starts | That's the warm-up color: the length is under 10 minutes. |
 | The vibration stopped before 30 seconds | Any touch or knob turn stops it. |

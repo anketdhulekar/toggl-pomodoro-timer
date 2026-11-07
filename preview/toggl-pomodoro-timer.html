@@ -149,6 +149,7 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 24px; al
 .pk-name { font-family: var(--f-ui); font-weight: 600; font-size: 18px; fill: var(--ink); }
 .pk-hint { font-family: var(--f-ui); font-weight: 600; font-size: 14px; text-anchor: middle; fill: var(--sub); }
 .pk-dot-none { fill: none; stroke: var(--sub); stroke-width: 1.5; }
+.pk-name.pk-action { fill: var(--sub); }
 
 @keyframes breathe { 50% { opacity: .35; } }
 .breathe { animation: breathe 2s ease-in-out infinite; }
@@ -388,8 +389,8 @@ kbd {
       <dl class="ctl">
         <div><dt>Tap the screen</dt><dd>Start, pause and resume. Press <kbd>Space</kbd>.</dd></div>
         <div><dt>Hold</dt><dd>Reset: the time goes to 0:00 in Tracking and to the set length in Pomodoro. The task goes back to "Untitled", and the project is cleared to "No project". Press <kbd>R</kbd>.</dd></div>
-        <div><dt>Tap the task</dt><dd>Past tasks, newest first, with "Untitled" on top. Turn the knob to scroll, tap to choose. A task too long for the screen scrolls by itself. Press <kbd>T</kbd>.</dd></div>
-        <div><dt>Tap the project pill</dt><dd>Your Toggl projects; "Work" is the default. Press <kbd>P</kbd>.</dd></div>
+        <div><dt>Tap the task</dt><dd>Past tasks, newest first, from the knob's cache (the last 20). The list opens on "Untitled": turn the knob to choose, then tap. A tap without a turn closes the list. Turn up to "Sync from Toggl" and tap to reload the list from Toggl. A task too long for the screen scrolls by itself. Press <kbd>T</kbd>.</dd></div>
+        <div><dt>Tap the project pill</dt><dd>Your Toggl projects, cached on the knob; "Work" is the default. The list opens on "No project" and works like the past tasks, with "Sync from Toggl" on top. Press <kbd>P</kbd>.</dd></div>
         <div><dt>Tap the mic</dt><dd>Say the task (simulated here). Saying a project's name picks it. Press <kbd>M</kbd>.</dd></div>
         <div><dt>Swipe up</dt><dd>Switch between Tracking and Pomodoro (not while running). Press <kbd>Shift</kbd> + <kbd>↑</kbd>.</dd></div>
         <div><dt>Swipe left or right</dt><dd>Change the color profile: Mono (white on black) or Inverted (black on white). Works any time, even while running. Press <kbd>Shift</kbd> + <kbd>←</kbd> <kbd>→</kbd>.</dd></div>
@@ -569,9 +570,13 @@ kbd {
     const e = { id: T.nextId++, desc, project, start: simNow, end: null, by };
     T.entries.unshift(e);
     T.running = e.id;
+    if (by === "knob") rememberTask(desc, project);
     return e.id;
   }
-  const tgUpdate = (id, fields) => { const e = findEntry(id); if (e) Object.assign(e, fields); };
+  const tgUpdate = (id, fields) => { // (only the knob updates its own entry)
+    const e = findEntry(id);
+    if (e) { Object.assign(e, fields); rememberTask(e.desc, e.project); }
+  };
 
   // ---- Feedback ----
   const motor = $("motor"), motorText = $("motorText"), device = $("device"), live = $("live");
@@ -716,58 +721,93 @@ kbd {
   }
 
   // ---- Lists (past tasks, projects) ----
-  const PK_ROW = 44;
+  // Both lists come from a cache on the knob. Row 0, "Sync from Toggl", reloads it from Toggl;
+  // row 1 is "Untitled" or "No project", where the cursor starts; then the cached rows.
+  // Opening a list sends nothing to Toggl.
+  const PK_ROW = 44, ROW_SYNC = 0, ROW_NONE = 1, CACHE_TASKS = 20;
   let pkRows = [];
-  const picker = { open: false, kind: "", loading: false, idx: 0, pos: 0, until: 0, touched: false };
+  const picker = { open: false, kind: "", syncing: false, failed: false, idx: ROW_NONE, pos: ROW_NONE, until: 0, touched: false };
+  // Recent entries (the running one too), newest first, one per (task, project), as the knob fetches them.
+  function tasksFromToggl() {
+    const seen = new Set(), rows = [];
+    for (const e of [...T.entries, ...HISTORY]) {
+      const key = (e.desc || "").toLowerCase() + "|" + e.project;
+      if (!e.desc || seen.has(key)) continue;
+      seen.add(key); rows.push({ desc: e.desc, project: e.project });
+      if (rows.length >= CACHE_TASKS) break;
+    }
+    return rows;
+  }
+  const cache = { tasks: tasksFromToggl(), projects: PROJECTS.slice() }; // loaded once at first boot, then by "Sync from Toggl"
+  // A task the knob starts or renames goes to the top of the cached list, with no request.
+  function rememberTask(desc, project) {
+    if (!desc) return;
+    const key = desc.toLowerCase() + "|" + project;
+    cache.tasks = [{ desc, project }, ...cache.tasks.filter((e) => e.desc.toLowerCase() + "|" + e.project !== key)]
+      .slice(0, CACHE_TASKS);
+  }
   function setRows(items) {
     $("pkRows").replaceChildren();
     pkRows = items.map((item) => {
       const g = document.createElementNS(NS, "g");
       const dot = document.createElementNS(NS, "circle");
       const t = document.createElementNS(NS, "text");
-      t.setAttribute("class", "pk-name"); t.textContent = item.name;
+      t.setAttribute("class", item.action ? "pk-name pk-action" : "pk-name"); t.textContent = item.name;
       g.appendChild(dot); g.appendChild(t); $("pkRows").appendChild(g);
       return { item, g, dot, t };
     });
   }
-  function openTasks() {
-    const UNTITLED = { name: "Untitled", hollow: true, pick: () => { if (S.task) setTask("", true); } };
-    setRows([UNTITLED]);
-    Object.assign(picker, { open: true, kind: "tasks", loading: true, idx: 0, pos: 0, touched: false, until: performance.now() + 10000 });
-    haptic("tick"); announce("Past tasks");
-    setTimeout(() => { // fetched from Toggl each time (simulated)
-      if (!picker.open || picker.kind !== "tasks") return;
-      const seen = new Set(), rows = [];
-      for (const e of [...T.entries, ...HISTORY]) {
-        const key = (e.desc || "").toLowerCase() + "|" + e.project;
-        if (!e.desc || seen.has(key)) continue;
-        seen.add(key);
+  function showList(kind) {
+    const SYNC = { name: "Sync from Toggl", action: true };
+    if (kind === "tasks") {
+      const rows = cache.tasks.map((e) => {
         const proj = projectById(e.project);
-        rows.push({ name: e.desc, color: proj ? proj.color : "#8E8E94", hollow: !proj,
-                    pick: () => { // the same task and project again changes nothing
-                      if (e.desc === S.task && e.project === S.project) return;
-                      setTask(e.desc, true); setProject(e.project); } });
-      }
-      setRows([UNTITLED, ...rows]);
-      picker.loading = false;
-      if (!picker.touched && rows.length) picker.idx = 1; // the newest; "Untitled" is one click up
-    }, 500);
+        return { name: e.desc, color: proj ? proj.color : "#8E8E94", hollow: !proj,
+                 pick: () => { // the same task and project again changes nothing
+                   if (e.desc === S.task && e.project === S.project) return;
+                   setTask(e.desc, true); setProject(e.project); } };
+      });
+      setRows([SYNC, { name: "Untitled", hollow: true, pick: () => { if (S.task) setTask("", true); } }, ...rows]);
+    } else {
+      setRows([SYNC, { name: "No project", hollow: true, pick: () => setProject(0) },
+               ...cache.projects.map((p) => ({ name: p.name, color: p.color, pick: () => setProject(p.id) }))]);
+    }
   }
-  function openProjects() {
-    setRows([...PROJECTS.map((p) => ({ name: p.name, color: p.color, id: p.id, pick: () => setProject(p.id) })),
-             { name: "No project", hollow: true, id: 0, pick: () => setProject(0) }]);
-    const i = pkRows.findIndex((r) => r.item.id === S.project);
-    Object.assign(picker, { open: true, kind: "projects", loading: false, idx: i < 0 ? pkRows.length - 1 : i, touched: false, until: performance.now() + 10000 });
-    picker.pos = picker.idx;
-    haptic("tick"); announce("Projects");
+  function openList(kind) {
+    showList(kind);
+    Object.assign(picker, { open: true, kind, syncing: false, failed: false, idx: ROW_NONE, pos: ROW_NONE,
+                            touched: false, until: performance.now() + 10000 });
+    haptic("tick"); announce(kind === "tasks" ? "Past tasks" : "Projects");
+  }
+  const openTasks = () => openList("tasks"), openProjects = () => openList("projects");
+  // Tap on "Sync from Toggl": reload this list (one request). When it's done, the list
+  // looks as if it just opened: the cursor goes back to row 1.
+  function syncList() {
+    if (picker.syncing) return bump();
+    Object.assign(picker, { syncing: true, failed: false, until: performance.now() + 10000 });
+    haptic("click"); announce("Syncing");
+    const kind = picker.kind;
+    setTimeout(() => {
+      const ok = S.wifi;
+      if (ok) { if (kind === "tasks") cache.tasks = tasksFromToggl(); else cache.projects = PROJECTS.slice(); }
+      if (!picker.open || picker.kind !== kind) return; // closed meanwhile: the cache is still updated
+      Object.assign(picker, { syncing: false, failed: !ok, until: performance.now() + 10000 });
+      if (!ok) return bump();
+      showList(kind);
+      Object.assign(picker, { idx: ROW_NONE, touched: false });
+      haptic("tick"); announce("Synced");
+    }, 700);
+  }
+  function listTap() {
+    if (picker.idx === ROW_SYNC) return syncList();
+    closePicker(true);
   }
   function closePicker(choose) {
-    // A tap while the tasks still load picks nothing ("Untitled" is a placeholder), and in the
-    // projects list a tap without a turn of the knob keeps the project (a reflex tap mustn't clear it).
-    if (picker.kind === "tasks" && picker.loading) choose = false;
-    if (picker.kind === "projects" && !picker.touched) choose = false;
-    if (choose && pkRows[picker.idx]) pkRows[picker.idx].item.pick();
-    picker.open = false; haptic("tick");
+    // A tap without a turn of the knob keeps the task and the project: a reflex tap mustn't
+    // change them (the cursor starts on "Untitled" or "No project").
+    const row = pkRows[picker.idx];
+    if (choose && picker.touched && row && row.item.pick) row.item.pick();
+    picker.open = false; picker.syncing = false; haptic("tick");
   }
 
   // ---- Voice (simulated): listening stops after a pause, then a sample task arrives ----
@@ -798,7 +838,7 @@ kbd {
   // ---- Input dispatch ----
   function tapAt(x, y) {
     quiet();
-    if (picker.open) return closePicker(true);
+    if (picker.open) return listTap();
     if (voice.state === "listening") return voiceStop();
     if (x != null) {
       const d = Math.hypot(x - 180, y - MIC_Y);
@@ -819,7 +859,7 @@ kbd {
     quiet();
     if (!fromDrag) S.rot += dir * DETENT;
     if (picker.open) {
-      picker.until = performance.now() + 10000; picker.touched = true;
+      picker.until = performance.now() + 10000; picker.touched = true; picker.failed = false;
       const i = picker.idx + dir;
       if (i < 0 || i >= Math.max(1, pkRows.length)) return bump();
       picker.idx = i; return haptic("click");
@@ -987,7 +1027,8 @@ kbd {
     // Lists.
     if (picker.open && now > picker.until) closePicker(false);
     $("picker").classList.toggle("open", picker.open);
-    const hintText = picker.loading ? "loading…" : "tap to choose";
+    const hintText = picker.syncing ? "syncing…" : picker.failed ? "couldn\u2019t reach Toggl"
+      : picker.idx === ROW_SYNC ? "tap to sync" : "tap to choose";
     if ($("pkHint").textContent !== hintText) $("pkHint").textContent = hintText;
     picker.pos += (picker.idx - picker.pos) * (1 - Math.exp(-dt / 70));
     pkRows.forEach((r, i) => {
@@ -995,12 +1036,13 @@ kbd {
       r.g.style.display = alpha > 0 ? "" : "none";
       if (!alpha) return;
       const y = 180 + (i - picker.pos) * PK_ROW;
-      const w = r.t.getComputedTextLength(), left = 180 - (20 + w) / 2;
+      const w = r.t.getComputedTextLength(), act = !!r.item.action, left = 180 - (act ? w : 20 + w) / 2;
+      r.dot.style.display = act ? "none" : ""; // "Sync from Toggl": no dot, in the secondary color
       r.dot.setAttribute("cx", (left + 6).toFixed(1)); r.dot.setAttribute("cy", (y - 0.5).toFixed(1));
       r.dot.setAttribute("r", i === picker.idx ? 6 : 4.5);
       r.dot.setAttribute("class", r.item.hollow ? "pk-dot-none" : "");
       r.dot.setAttribute("fill", r.item.hollow ? "none" : r.item.color);
-      r.t.setAttribute("x", (left + 20).toFixed(1)); r.t.setAttribute("y", (y + 6).toFixed(1));
+      r.t.setAttribute("x", (left + (act ? 0 : 20)).toFixed(1)); r.t.setAttribute("y", (y + 6).toFixed(1));
       r.g.style.opacity = alpha.toFixed(3);
     });
 
@@ -1190,7 +1232,7 @@ kbd {
     last = performance.now();
     requestAnimationFrame(frame);
   }
-  window.__knob = () => ({ S, picker, layout, voice, press }); // for automated checks of this preview
+  window.__knob = () => ({ S, picker, layout, voice, press, cache }); // for automated checks of this preview
   window.claude?.hot?.snapshot?.(() => ({ v: 7, S }));
   window.claude?.hot?.ready ? window.claude.hot.ready(start) : start(window.claude?.hot?.data ?? {});
 })();

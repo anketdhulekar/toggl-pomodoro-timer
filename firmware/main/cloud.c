@@ -33,6 +33,7 @@
 #include "freertos/task.h"
 #include "mic.h"
 #include "net.h"
+#include "nvs.h"
 #include "render.h" // SCENE_TASK_LEN
 
 static const char *TAG = "cloud";
@@ -46,7 +47,9 @@ static const char *TAG = "cloud";
 #define SHIFT_REST_US 250000  // knob clicks are posted to the cloud task once the knob rests this long
 #define MAX_SEGS 12
 #define RESP_CAP (256 * 1024) // a page of entries (each with its task and project) is big
-#define PROJECTS_MAX_AGE_US (120 * 1000000LL)
+#define CACHE_NS "cache" // NVS namespace of the cached projects and recent entries
+// Changes when the cached structs change, so an old cache is ignored instead of misread.
+#define CACHE_FMT ((uint32_t)(sizeof(project_t) << 16 | sizeof(toggl_entry_t)))
 #define ENTRIES_FETCH 50 // newest entries requested per press of the Toggl button
 
 typedef enum {
@@ -58,6 +61,7 @@ typedef enum {
     MSG_CHECK,
     MSG_REFRESH,
     MSG_ENTRIES,
+    MSG_SAVE_ENTRIES,
     MSG_DEBUG_START,
     MSG_DEBUG_STOP,
 } msg_kind_t;
@@ -107,7 +111,7 @@ static project_t s_proj[MAX_PROJECTS]; // written by the cloud task under s_proj
 static project_t *s_proj_tmp;          // PSRAM scratch for a fetch
 static int s_nproj;
 static uint32_t s_proj_version;
-static int64_t s_proj_loaded_us;
+static entries_state_t s_proj_state = ENTRIES_IDLE; // the last cloud_sync_projects()
 static SemaphoreHandle_t s_proj_lock; // also guards the entries list
 static toggl_entry_t *s_entries, *s_entries_tmp; // PSRAM
 static int s_nentries;
@@ -445,12 +449,75 @@ static int toggl_get(const char *url, const char *what)
     return st;
 }
 
+// ---- Cache (NVS) ---------------------------------------------------------------------
+
+static bool toggl_ready(void);
+static void toggl_fetch_entries(void);
+
+// The cached projects and recent entries, loaded once at start-up (before the task runs).
+static void cache_load(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(CACHE_NS, NVS_READONLY, &h) != ESP_OK) return; // nothing cached yet
+    uint32_t fmt = 0;
+    if (nvs_get_u32(h, "fmt", &fmt) != ESP_OK || fmt != CACHE_FMT) {
+        nvs_close(h);
+        ESP_LOGI(TAG, "cache: none in this format");
+        return;
+    }
+    size_t len = MAX_PROJECTS * sizeof(project_t);
+    if (nvs_get_blob(h, "projects", s_proj_tmp, &len) == ESP_OK && len % sizeof(project_t) == 0) {
+        memcpy(s_proj, s_proj_tmp, len);
+        s_nproj = len / sizeof(project_t);
+        if (s_nproj) s_proj_version++;
+    }
+    len = MAX_ENTRIES * sizeof(toggl_entry_t);
+    if (nvs_get_blob(h, "entries", s_entries_tmp, &len) == ESP_OK && len % sizeof(toggl_entry_t) == 0) {
+        memcpy(s_entries, s_entries_tmp, len);
+        s_nentries = len / sizeof(toggl_entry_t);
+    }
+    nvs_close(h);
+    ESP_LOGI(TAG, "cache: %d projects, %d recent entries", s_nproj, s_nentries);
+}
+
+// Called from the cloud task only. Writes happen when a sync changes a list, or when the
+// knob starts a task that isn't on top yet: rare enough for the flash.
+static void cache_save(const char *key, const void *data, size_t len)
+{
+    nvs_handle_t h;
+    esp_err_t e = nvs_open(CACHE_NS, NVS_READWRITE, &h);
+    if (e == ESP_OK) {
+        e = nvs_set_u32(h, "fmt", CACHE_FMT);
+        if (e == ESP_OK) e = len ? nvs_set_blob(h, key, data, len) : nvs_erase_key(h, key);
+        if (e == ESP_ERR_NVS_NOT_FOUND) e = ESP_OK; // (erasing a key that was never written)
+        if (e == ESP_OK) e = nvs_commit(h);
+        nvs_close(h);
+    }
+    if (e != ESP_OK) ESP_LOGW(TAG, "cache: couldn't save %s (%s)", key, esp_err_to_name(e));
+}
+
+static void save_entries(void)
+{
+    xSemaphoreTake(s_proj_lock, portMAX_DELAY);
+    const int n = s_nentries;
+    memcpy(s_entries_tmp, s_entries, n * sizeof(toggl_entry_t));
+    xSemaphoreGive(s_proj_lock);
+    cache_save("entries", s_entries_tmp, n * sizeof(toggl_entry_t));
+}
+
 // Active projects in the workspace, sorted by name, with their Toggl colors.
 static void toggl_fetch_projects(void)
 {
+    if (!toggl_ready() || rate_limited("projects")) {
+        __atomic_store_n(&s_proj_state, ENTRIES_FAILED, __ATOMIC_RELEASE);
+        return;
+    }
     char url[200];
     snprintf(url, sizeof url, TOGGL_API "/organizations/%lld/workspaces/%lld/projects?per_page=100", s_oid, s_wid);
-    if (!http_ok(toggl_get(url, "projects"))) return;
+    if (!http_ok(toggl_get(url, "projects"))) {
+        __atomic_store_n(&s_proj_state, ENTRIES_FAILED, __ATOMIC_RELEASE);
+        return;
+    }
     project_t *list = s_proj_tmp;
     int n = 0;
     cJSON *root = cJSON_Parse(s_resp);
@@ -470,8 +537,7 @@ static void toggl_fetch_projects(void)
             ESP_LOGI(TAG, "Toggl project \"%s\" left out (%s)", name, skip);
             continue;
         }
-        list[n].id = id;
-        list[n].color = parse_color(jstr(p, "color"));
+        list[n] = (project_t){.id = id, .color = parse_color(jstr(p, "color"))}; // (zeroed: compared below)
         ucopy(list[n].name, name, PROJECT_NAME_LEN);
         n++;
     }
@@ -479,12 +545,14 @@ static void toggl_fetch_projects(void)
     cJSON_Delete(root);
     qsort(list, n, sizeof list[0], cmp_project);
     xSemaphoreTake(s_proj_lock, portMAX_DELAY);
+    const bool changed = n != s_nproj || memcmp(s_proj, list, n * sizeof list[0]) != 0;
     memcpy(s_proj, list, n * sizeof list[0]);
     s_nproj = n;
     s_proj_version++;
-    s_proj_loaded_us = esp_timer_get_time();
     xSemaphoreGive(s_proj_lock);
-    ESP_LOGI(TAG, "Toggl: %d projects", n);
+    __atomic_store_n(&s_proj_state, ENTRIES_OK, __ATOMIC_RELEASE);
+    ESP_LOGI(TAG, "Toggl: %d projects%s", n, changed ? " (cache updated)" : "");
+    if (changed) cache_save("projects", list, n * sizeof list[0]);
 }
 
 // Look for an organization id anywhere in a JSON response (fields Toggl's spec
@@ -556,7 +624,9 @@ static bool toggl_setup(void)
     s_wid = wid;
     s_oid = oid;
     ESP_LOGI(TAG, "Toggl ready: organization %lld, workspace %lld", s_oid, s_wid);
-    toggl_fetch_projects();
+    // First boot (an empty cache): load both lists once. After that, only "Sync from Toggl" does.
+    if (!s_nproj) toggl_fetch_projects();
+    if (!s_nentries) toggl_fetch_entries();
     s_backoff_s = 5;
     return true;
 }
@@ -594,7 +664,7 @@ int64_t cloud_match_project(const char *desc)
     return best;
 }
 
-// Recent finished entries, newest first, one row per (label, project).
+// Recent entries (the running one too), newest first, one row per (label, project).
 static void toggl_fetch_entries(void)
 {
     if (!toggl_ready() || rate_limited("entries")) {
@@ -622,7 +692,7 @@ static void toggl_fetch_entries(void)
     cJSON_ArrayForEach(e, arr)
     {
         if (n >= MAX_ENTRIES) break;
-        if (jnum(e, "duration") <= 0 || !jstr(e, "start")) continue; // running, or only planned
+        if (!jstr(e, "start")) continue; // only planned
         const cJSON *task = cJSON_GetObjectItem(e, "task"), *proj = cJSON_GetObjectItem(e, "project");
         const char *desc = jstr(e, "description"), *task_name = cJSON_IsObject(task) ? jstr(task, "name") : NULL;
         const char *proj_name = cJSON_IsObject(proj) ? jstr(proj, "name") : NULL;
@@ -643,11 +713,14 @@ static void toggl_fetch_entries(void)
     }
     cJSON_Delete(root);
     xSemaphoreTake(s_proj_lock, portMAX_DELAY);
+    const bool changed = n != s_nentries || memcmp(s_entries, s_entries_tmp, n * sizeof(toggl_entry_t)) != 0;
     memcpy(s_entries, s_entries_tmp, n * sizeof(toggl_entry_t));
     s_nentries = n;
     xSemaphoreGive(s_proj_lock);
     __atomic_store_n(&s_entries_state, ENTRIES_OK, __ATOMIC_RELEASE);
-    ESP_LOGI(TAG, "Toggl: %d recent entries%s%s", n, n ? ", latest: " : "", n ? s_entries[0].label : "");
+    ESP_LOGI(TAG, "Toggl: %d recent entries%s%s%s", n, changed ? " (cache updated)" : "", n ? ", latest: " : "",
+             n ? s_entries_tmp[0].label : "");
+    if (changed) cache_save("entries", s_entries_tmp, n * sizeof(toggl_entry_t));
 }
 
 static cJSON *entry_body(const seg_t *g)
@@ -929,8 +1002,11 @@ static void handle(const msg_t *m)
     case MSG_CHECK:
         toggl_check(m->knob_running);
         break;
-    case MSG_REFRESH:
-        if (esp_timer_get_time() - s_proj_loaded_us > PROJECTS_MAX_AGE_US && toggl_ready()) toggl_fetch_projects();
+    case MSG_REFRESH: // "Sync from Toggl" in the projects list
+        toggl_fetch_projects();
+        break;
+    case MSG_SAVE_ENTRIES: // the UI put a task at the top of the cached list
+        save_entries();
         break;
     case MSG_ENTRIES:
         toggl_fetch_entries();
@@ -1021,6 +1097,7 @@ void cloud_init(void)
         s_proj_tmp = heap_caps_calloc(MAX_PROJECTS, sizeof(project_t), MALLOC_CAP_SPIRAM);
         s_entries = heap_caps_calloc(MAX_ENTRIES, sizeof(toggl_entry_t), MALLOC_CAP_SPIRAM);
         s_entries_tmp = heap_caps_calloc(MAX_ENTRIES, sizeof(toggl_entry_t), MALLOC_CAP_SPIRAM);
+        cache_load();
     }
     // Internal-RAM stack: TLS math with a PSRAM stack made handshakes ~10x slower.
     xTaskCreatePinnedToCore(cloud_task, "cloud", 10240, NULL, 4, NULL, 1);
@@ -1167,10 +1244,16 @@ int cloud_projects(project_t *out, int max, uint32_t *version)
     return n;
 }
 
-void cloud_refresh_projects(void)
+bool cloud_sync_projects(void)
 {
-    if (HAVE_TOGGL) post(&(msg_t){.kind = MSG_REFRESH});
+    if (!HAVE_TOGGL || !s_q) return false;
+    __atomic_store_n(&s_proj_state, ENTRIES_LOADING, __ATOMIC_RELEASE);
+    if (post(&(msg_t){.kind = MSG_REFRESH})) return true;
+    __atomic_store_n(&s_proj_state, ENTRIES_FAILED, __ATOMIC_RELEASE);
+    return false;
 }
+
+entries_state_t cloud_projects_state(void) { return __atomic_load_n(&s_proj_state, __ATOMIC_ACQUIRE); }
 
 uint32_t cloud_projects_version(void) { return __atomic_load_n(&s_proj_version, __ATOMIC_ACQUIRE); }
 
@@ -1187,13 +1270,42 @@ entries_state_t cloud_entries(toggl_entry_t *out, int max, int *n)
 {
     const entries_state_t st = __atomic_load_n(&s_entries_state, __ATOMIC_ACQUIRE);
     *n = 0;
-    if (st == ENTRIES_OK && s_proj_lock) {
+    if (out && max > 0 && s_entries && s_proj_lock) { // (out NULL: only the state)
         xSemaphoreTake(s_proj_lock, portMAX_DELAY);
         *n = s_nentries < max ? s_nentries : max;
         memcpy(out, s_entries, *n * sizeof(toggl_entry_t));
         xSemaphoreGive(s_proj_lock);
     }
     return st;
+}
+
+void cloud_remember_entry(const char *label, int64_t task_id, const project_t *project)
+{
+    if (!s_entries || !s_proj_lock || !label || !label[0]) return; // (an untitled entry isn't listed)
+    toggl_entry_t row = {.task_id = task_id};
+    ucopy(row.label, label, sizeof row.label);
+    if (project && project->id > 0) {
+        row.project.id = project->id;
+        row.project.color = project->color;
+        ucopy(row.project.name, project->name, PROJECT_NAME_LEN);
+    }
+    xSemaphoreTake(s_proj_lock, portMAX_DELAY);
+    // The row it replaces: the same task and project, else the last one (dropped when full).
+    int at = s_nentries < MAX_ENTRIES ? s_nentries : MAX_ENTRIES - 1;
+    for (int i = 0; i < s_nentries; i++) {
+        if (s_entries[i].project.id == row.project.id && strcasecmp(s_entries[i].label, row.label) == 0) {
+            at = i;
+            break;
+        }
+    }
+    const bool same = at == 0 && s_nentries && memcmp(&s_entries[0], &row, sizeof row) == 0;
+    if (!same) {
+        memmove(&s_entries[1], &s_entries[0], at * sizeof row);
+        s_entries[0] = row;
+        if (at == s_nentries) s_nentries++;
+    }
+    xSemaphoreGive(s_proj_lock);
+    if (!same) post(&(msg_t){.kind = MSG_SAVE_ENTRIES}); // (if the queue is full, the next save catches up)
 }
 
 bool cloud_toggl_ready(void) { return HAVE_TOGGL && !s_toggl_off && s_wid != 0; }

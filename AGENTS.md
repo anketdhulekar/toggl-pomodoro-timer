@@ -75,12 +75,16 @@ Proposed changes that the owner has not decided yet are in `TODO.md`. Don't star
 - **Gestures:** hold = reset **only** (voice moved off hold because it fired when the owner meant to reset). In both modes, a hold also clears the task ("Untitled", task id 0) and sets "No project" (id 0, not the -1 default that becomes "Work"); it stops a running entry first, so nothing else goes to Toggl. At rest with nothing to clear, it only bumps (`task_project_cleared`, `clear_task_project`). Tap the task: past tasks list. Tap the pill: projects list. Swipe down: Tracking only, sync with Toggl.
 - **Mic hit area:** radius 34 px. The 44 px dead zone applies only below the status line (y > 243): a near miss bumps and does nothing.
 - **Lists**
-  - Past tasks: "Untitled" on top, then recent entries deduped by (description, project), newest first, fetched fresh on every open (at most 50, last 30 days), opening on row 1. Picking one while tracking switches entries (the counter keeps going); in a running Pomodoro it renames the entry. Picking the task that's already set changes nothing (no split entry). While the list is loading or failed, a tap only closes it ("Untitled" is a placeholder there).
-  - Projects: sorted by name, "No project" last, opening on the current project ("No project" if it isn't listed). A tap only chooses after a turn of the knob, so a reflex tap never clears the project; re-picking the current project changes nothing. A reload while open keeps the highlighted project. "Work" is the default when no project was ever chosen.
+  - Both lists come from a **cache in NVS** (namespace `cache`, guarded by a `fmt` size key): they open at once, work offline, survive restarts, and opening one sends nothing to Toggl. Toggl is asked only when a cache is empty (first boot, in `toggl_setup`) or when the user picks "Sync from Toggl". The owner said projects almost never change.
+  - Rows in both lists: **row 0 "Sync from Toggl"** (no dot, secondary color), **row 1 "Untitled" / "No project"**, where the cursor opens, then the cached rows (`ROW_SYNC`, `ROW_NONE`, `ROW_FIRST`). The owner chose this layout: syncing is a deliberate turn up to the top and a tap.
+  - **Turn, then tap** in both lists: a tap without a turn only closes the list, so a reflex tap never changes the task or project (it would otherwise pick "Untitled" / "No project"). Re-picking the current task or project changes nothing.
+  - "Sync from Toggl": the list stays open with "syncing…" (`P.sync`); on success the rows refresh and the list returns to row 1, untouched; on failure "couldn't reach Toggl" shows until the next turn. Each sync is one request for that list only.
+  - Past tasks: the last 20 distinct (description, project) pairs, newest first, the running entry included. A task the knob starts or renames goes to the top without a request (`cloud_remember_entry`, saved by the cloud task). Picking one while tracking switches entries (the counter keeps going); in a running Pomodoro it renames the entry.
+  - Projects: sorted by name. A reload while open keeps the highlighted project. "Work" is the default when no project was ever chosen.
   - Lists use the profile's face and ink colors.
 - **Toggl**
   - Entries start in Toggl immediately. A stretch stopped within 10 s is **deleted** (accidental-tap guard).
-  - Toggl is contacted **only on user actions** (start, pause, change, opening a list, swipe down). No polling: the free plan's rate limit is small.
+  - Toggl is contacted **only on user actions** (start, pause, change, "Sync from Toggl", swipe down). No polling: the free plan's rate limit is small.
   - **Syncing is manual, and it's the user's job.** The knob never checks Toggl by itself: no resume after a restart, no check at boot, no background reconciliation. After a restart it comes back reset even if its entry still runs in Toggl; the user pauses before unplugging or swipes down before starting. Don't add automatic syncing without asking.
   - Swipe down (Tracking): a timer started elsewhere is adopted (task, project, start); the knob's own timer stopped elsewhere, or running with no Toggl entry at all → paused ("stopped in Toggl"); otherwise "in sync".
   - A start, change or stop Toggl turns down for good shows "not saved in Toggl".
@@ -99,7 +103,7 @@ Proposed changes that the owner has not decided yet are in `TODO.md`. Don't star
   - Only dirty 24-row bands are redrawn (`dirty_bands`, a bitmask, so changes at the top and bottom don't redraw the middle). `render_capture` draws a full frame into memory for tests.
 - **`cloud.c`:** one FreeRTOS task (core 1, internal-RAM stack) owns all HTTPS. The UI posts messages and polls results.
   - Speech-to-text: multipart WAV upload to `gpt-transcribe`, with Toggl project names sent as `keywords[]`.
-  - Toggl 2.0: setup (workspace from `/users/me/settings`, organization from secrets), projects, entries, the run queue `s_seg` with offline retry, the swipe-down check (`toggl_check`), and debug "elsewhere" start/stop.
+  - Toggl 2.0: setup (workspace from `/users/me/settings`, organization from secrets), projects, entries, the list cache (`cache_load`, `cache_save`; written only from the cloud task, and only when a list changed), the run queue `s_seg` with offline retry, the swipe-down check (`toggl_check`), and debug "elsewhere" start/stop.
   - Changes to a running entry (knob, rename, project) go out as one `PATCH` once they settle (1.5 s), with only the fields that changed: a knob turn sends just `start`, never the knob's 95-byte copy of the description.
   - The message queue (32 slots) lives in PSRAM. Knob clicks are held on the UI side (`cloud_session_shift`) and posted as one message once the knob rests 250 ms (`cloud_tick`), or before any other message, so a fast spin can't fill the queue. `post()` reports a full queue, and the UI falls back ("transcription failed", "couldn't reach Toggl").
   - Text from Toggl is cut with `ucopy`, which never splits a UTF-8 character.
@@ -140,7 +144,7 @@ Proposed changes that the owner has not decided yet are in `TODO.md`. Don't star
   - `tasks/{id}/time-entries`
   - `projects?per_page=100`
 - Projects marked `"active": false` (often default projects people still log to) are still in use; filter only on archived, deleted, template and draft.
-- Rate limits are reportedly 30 requests/hour on the free plan, so avoid polling. After a 429, swipe down and the lists answer at once without a request until the backoff ends.
+- Rate limits are reportedly 30 requests/hour on the free plan, so avoid polling. After a 429, swipe down and "Sync from Toggl" answer at once without a request until the backoff ends.
 - Timers adopted from another device are never deleted by the 10 s rule (that's for the knob's own accidental starts).
 
 ## Debug interface and telemetry (for tests and debugging only)
@@ -155,7 +159,7 @@ It's compiled in when `CONFIG_KNOB_DEBUG_INTERFACE=y` (the default; `idf.py menu
 | `e` | tap the task (past tasks list) |
 | `o` | tap the pill (projects list) |
 | `m` | mic button |
-| `t` | tap inside a list, or stop listening |
+| `t` | tap inside a list (on row 0: sync it), or stop listening |
 | `u` `p` | swipe up (mode) / down (Toggl sync) |
 | `<` `>` | swipe left / right (profile) |
 | `d` | `STATE {json}` |
@@ -168,7 +172,7 @@ It's compiled in when `CONFIG_KNOB_DEBUG_INTERFACE=y` (the default; `idf.py menu
 | `#toggl start TEXT` / `#toggl stop` | start or stop a Toggl timer directly, as another device would |
 | `#wifi off\|on` | simulate an outage |
 | `#telemetry on\|off` | `TELEMETRY {json}` every 5 s (saved in NVS) |
-| `#list` | `PROJECTS [...]` and `ENTRIES [...]` |
+| `#list` | `PROJECTS [...]` and `ENTRIES [...]` (the caches, or the open list's copy) |
 | `#reboot` | save settings and restart |
 
 `#` commands reply with `CMD ok …` or `CMD error …`.

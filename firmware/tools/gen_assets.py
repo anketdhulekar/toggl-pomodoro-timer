@@ -62,7 +62,7 @@ STRINGS = [
     ("STR_TAP_TO_CHOOSE", "tap to choose"),
     ("STR_NO_PROJECTS", "no projects yet"),
     ("STR_TOGGL_OFF", "Toggl isn’t set up"),
-    ("STR_LOADING", "loading…"),
+    ("STR_TAP_TO_SYNC", "tap to sync"),
     ("STR_TOGGL_ERROR", "couldn’t reach Toggl"),
     ("STR_NO_ENTRIES", "no recent entries"),
     ("STR_NOT_SAVED", "not saved in Toggl"),

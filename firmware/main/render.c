@@ -808,6 +808,7 @@ typedef struct {
     float cy, dot_x, dot_r;
     uint16_t dot_c; // native RGB565
     bool hollow;
+    bool action;    // no dot, text in the secondary color
     int a256;       // row opacity
 } pk_row_t;
 
@@ -821,7 +822,8 @@ static void picker_row(uint16_t *o, int y, int hint)
     for (int k = 0; k < s_npk; k++) {
         const pk_row_t *r = &s_pk[k];
         const float dy = y + 0.5f - r->cy;
-        if (dy > -r->dot_r - 2 && dy < r->dot_r + 2) {
+        const uint16_t ink = r->action ? s_pk_sub : s_pk_ink;
+        if (!r->action && dy > -r->dot_r - 2 && dy < r->dot_r + 2) {
             const int x0 = ifloor(r->dot_x - r->dot_r - 2), x1 = ifloor(r->dot_x + r->dot_r + 2);
             for (int x = imax(0, x0); x <= imin(W - 1, x1); x++) {
                 const float dx = x + 0.5f - r->dot_x, d = sqrtf(dx * dx + dy * dy);
@@ -838,7 +840,7 @@ static void picker_row(uint16_t *o, int y, int hint)
                 const uint8_t *src = gl->m.data + gy * gl->m.w;
                 for (int j = 0; j < gl->m.w; j++) {
                     const int X = gx0 + j;
-                    if (src[j] && (unsigned)X < W) o[X] = mix565(o[X], s_pk_ink, (src[j] * r->a256) >> 8);
+                    if (src[j] && (unsigned)X < W) o[X] = mix565(o[X], ink, (src[j] * r->a256) >> 8);
                 }
             }
             pen16 += gl->adv16;
@@ -871,8 +873,10 @@ static void picker_setup(const picker_view_t *v)
         pk_row_t *r = &s_pk[s_npk++];
         int w16;
         r->n = layout_text(v->names[i], LIST_FONT, r->g, PK_MAX_W * 16, &w16);
-        const float left = CX - (20.0f + w16 / 16.0f) / 2;
-        r->x16 = (int)((left + 20) * 16);
+        r->action = v->action[i];
+        const float dot_w = r->action ? 0.0f : 20.0f; // dot and gap before the name
+        const float left = CX - (dot_w + w16 / 16.0f) / 2;
+        r->x16 = (int)((left + dot_w) * 16);
         r->dot_x = left + 6;
         r->cy = CY + (i - v->pos) * PK_ROW - 0.5f;
         r->base = ifloor(r->cy + 0.5f) + 6;

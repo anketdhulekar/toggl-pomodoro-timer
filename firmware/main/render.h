@@ -51,6 +51,7 @@ typedef struct {
     const char *names[PICKER_MAX];
     uint32_t colors[PICKER_MAX]; // dot colors
     bool hollow[PICKER_MAX];     // drawn as an empty ring ("Untitled", "No project")
+    bool action[PICKER_MAX];     // no dot, in the secondary color ("Sync from Toggl")
     int selected;
     float pos;                   // scroll position, glides toward `selected`
     int hint;                    // str_id_t shown at the bottom, -1 = none

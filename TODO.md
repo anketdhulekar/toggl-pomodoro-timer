@@ -8,14 +8,8 @@ These UX problems come from a review of the controls on 2026-11-01. None of them
 
 ## Small fixes
 
-- [ ] **Use the same rule to choose a row in both lists.**
-  - In the projects list, a tap chooses a row only after you turn the knob. In the past-tasks list, a tap chooses the highlighted row immediately.
-  - The past-tasks list opens on the newest finished entry. This entry is usually not the current task, because the running entry is not in the list.
-  - As a result, a tap to close the list can change the task and split the Toggl entry.
-  - Fix: use the turn-then-tap rule in both lists. Show "turn to choose" until the knob turns (see the next item).
-  - Where: `picker_close()` in `firmware/main/main.c`. In the preview, `closePicker()`. Also, the preview's past-tasks list includes the running entry, but the firmware's list does not. Make the preview match the firmware.
-- [ ] **Show the correct hint in the projects list.**
-  - The list shows "tap to choose" when it opens, but a tap without a turn closes the list.
+- [ ] **Show the correct hint when a list opens.**
+  - Both lists show "tap to choose" when they open, but a tap without a turn only closes the list.
   - Fix: show "turn to choose" until the knob turns, then "tap to choose". This needs a new status string in `firmware/tools/gen_assets.py`.
 - [ ] **Stop accidental taps near the pill and the task.**
   - The mic has a dead zone, but the pill and the task do not have one.
@@ -81,4 +75,4 @@ These UX problems come from a review of the controls on 2026-11-01. None of them
   - "no projects yet" means that the projects did not load. Better text: "projects not loaded".
   - "couldn't reach Toggl" also shows when the knob is offline. Better text in that case: "no Wi-Fi". During the rate-limit backoff: "Toggl busy, try later".
   - "synced from Toggl" means that the knob took a timer from another device. Better text: "picked up from Toggl".
-- [ ] **Do not show "No project" on the first boot.** The pill shows "No project" for approximately 5 s, until the projects load and "Work" becomes the default. A new user can think that the setup failed.
+- [ ] **Do not show "No project" on the first boot.** On the very first boot, the project cache is empty. The pill shows "No project" for approximately 5 s, until the projects load and "Work" becomes the default. A new user can think that the setup failed. (Later boots load the projects from the cache at once.)

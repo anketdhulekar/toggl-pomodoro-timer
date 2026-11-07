@@ -19,8 +19,8 @@ The harness prints `PASS` or `FAIL` for each case, with a short detail line, and
 
 1. **Fresh boot.** Opening the serial port restarts the knob. The harness waits up to 30 s for Wi-Fi, Toggl and the project list.
 2. **Your settings are recorded.** It saves the mode, profile, Pomodoro length, task, the task's Toggl task link, project (with its color and name, since it may not be in Toggl's active list) and the telemetry setting. It also reads your projects and recent entries (`#list`).
-3. **The cases run in the order of this page,** with three exceptions: the offline block runs between the lists and voice, and G2, B5 and B4 run last. Timer cases that aren't about Toggl (M, R, P, H and L8) run with Wi-Fi switched off (`#wifi off`) and keep every running stretch under 10 s, so they never reach Toggl. The one exception is P5's 1-minute run, which is logged once Wi-Fi is back.
-4. **Your settings are restored,** even after a failure or Ctrl-C.
+3. **The cases run in the order of this page,** with three exceptions: the offline block runs between the lists and voice, and G2, G3, B5 and B4 run last. Timer cases that aren't about Toggl (M, R, P, H, L8 and L10) run with Wi-Fi switched off (`#wifi off`) and keep every running stretch under 10 s, so they never reach Toggl. The one exception is P5's 1-minute run, which is logged once Wi-Fi is back.
+4. **Your settings are restored,** even after a failure or Ctrl-C. The test tasks that the knob started went to the top of its cached past tasks, so the harness also syncs the past tasks with Toggl ("Sync from Toggl").
 5. **Output goes to `firmware/test-output/`** (git-ignored):
    - `report.json`: every result.
    - `serial.log`: the whole log, with the Wi-Fi name masked.
@@ -57,16 +57,20 @@ The harness prints `PASS` or `FAIL` for each case, with a short detail line, and
 
 ## Lists (online, read-only)
 
+Both lists open on row 1 ("Untitled" or "No project"), under row 0 ("Sync from Toggl"). The cached rows start at row 2.
+
 | ID | Scenario | Pass when |
 |----|----------|-----------|
-| L1 | **Projects list.** Taps the pill, captures, swipes up. Opens it again and taps without turning the knob. Then sets a project that isn't in the list (`#project 999999 …`), opens the list and taps. Restores the project. | The list opens on the current project with "No project" last, and swipe up closes it. A tap without a turn keeps the project. For a project that isn't in the list, the list opens on "No project" and a tap still keeps the project. |
-| L2 | **Pick a project.** Turns to a different project and taps, captures. Then picks "No project" and captures. | The project is selected and the Tracking rim takes its color. "No project" clears it, and the rim turns white (Mono). |
+| L1 | **Projects list.** Taps the pill, captures, swipes up. Opens it again and taps without turning the knob. Then sets a project that isn't in the list (`#project 999999 …`), opens the list and taps. Restores the project. | The list has projects and opens on row 1 ("No project"), and swipe up closes it. A tap without a turn keeps the project, also one that isn't in the list. |
+| L2 | **Pick a project.** Turns to a different project and taps, captures. Then picks "No project" (turning away and back first) and captures. | The project is selected and the Tracking rim takes its color. "No project" clears it, and the rim turns white (Mono). |
 | L3 | **Auto-close.** Opens the projects list and leaves it alone. | It closes by itself within 14 s (it closes after 10 s without input). |
-| L4 | **Past tasks.** Taps the task, reads the state at once and again after loading, and captures. | It shows "loading…" first, then your entries, opening on row 1 (the newest). |
-| L5 | **Fetched fresh.** Opens and closes past tasks twice. | Two fetches from Toggl are logged. |
-| L6 | **Pick a task.** Picks row 1. | The task is the newest entry's name, and the project is that entry's project. |
-| L7 | **Untitled.** Sets the task "knob-test L7" and picks row 0. | The task is cleared and the project is unchanged. |
-| L8 | **A list that couldn't load** (in the offline block). With Wi-Fi off, sets the task "knob-test L8 kept", taps the task, waits for "couldn't reach Toggl", then taps. | The list closes, the task is unchanged and the timer didn't start: the "Untitled" placeholder isn't chosen. |
+| L4 | **Past tasks.** Taps the task, reads the state at once, and captures. | The list shows the cached entries at once (no "syncing…"), opening on row 1 ("Untitled"). |
+| L5 | **Opening costs nothing.** Opens and closes past tasks and projects twice each. | No fetch from Toggl is logged. |
+| L6 | **Pick a task.** Picks row 2. | The task is the first cached entry's name, and the project is that entry's project. |
+| L7 | **Untitled.** Sets the task "knob-test L7" and picks row 1 (turning away and back first). | The task is cleared and the project is unchanged. |
+| L9 | **Sync from Toggl.** For the projects list, then for past tasks: opens it, turns up to row 0, taps, and waits for the result. | Each sync succeeds with exactly one fetch of that list. The list stays open and goes back to row 1. |
+| L8 | **Sync while offline** (in the offline block). With Wi-Fi off, sets the task "knob-test L8 kept", opens past tasks, turns up to row 0 and taps. Turns once more, then swipes up. | The cached entries show offline. The sync fails ("couldn't reach Toggl"), the next turn clears the error, and the task is unchanged. |
+| L10 | **A started task goes to the top** (in the offline block). With Wi-Fi off, sets the task "knob-test L10 started", taps, waits 0.5 s and taps again. Reads the cache (`#list`). | The task is the first row of the cached past tasks, and no fetch from Toggl is logged. |
 
 ## Settings
 
@@ -74,6 +78,7 @@ The harness prints `PASS` or `FAIL` for each case, with a short detail line, and
 |----|----------|-----------|
 | G1 | **Saved.** Swipes to the other profile and back. | A save to flash is logged within 5 s (settings are written 2 s after the last change). |
 | G2 | **Survives restart** (runs near the end). Sets Pomodoro, 17 min, Inverted, the task "knob-test G2 survives restart" and your first project. Waits for the save, then restarts the knob (`#reboot`). | After the restart, the mode, profile, length, task and project are the same. |
+| G3 | **The lists survive a restart** (runs near the end). Restarts the knob (`#reboot`) and waits for Wi-Fi and Toggl, plus 3 s. | The log shows projects and recent entries loaded from the cache at boot, and no fetch of either list from Toggl. |
 
 ## Modes and profiles (offline)
 
@@ -129,7 +134,7 @@ The harness prints `PASS` or `FAIL` for each case, with a short detail line, and
 | S1 ✎⏱ | **Start right away.** Sets the task "knob-test S1 tracked", taps, waits 11 s and taps again. | A Toggl entry started within 8 s of the tap, and it's the knob's entry. Pausing stopped it. |
 | S2 ✎ | **Accidental start.** Sets the task "knob-test S2 accidental", taps, and taps again as soon as the entry has started. | The entry is deleted from Toggl. |
 | S3 ✎⏱ | **Fast knob.** Sets the task "knob-test S3 adjusted", taps, and right away sends 12 fast clockwise clicks while the start request is still on its way. | The knob shows 12 minutes. Toggl got one update that moved the entry's start 12 minutes earlier and changed nothing else. Pausing stopped it. |
-| S4 ✎⏱ | **Switch task.** Sets the task "knob-test S4 first", taps, and waits 11 s. Picks an earlier knob-test entry from past tasks, then picks the same one again. | The first entry stopped and a new one started for the picked task, while the counter kept going. Picking the same task again changed nothing in Toggl: no new entry. |
+| S4 ✎⏱ | **Switch task.** With Wi-Fi off, runs the task "knob-test S4 second" for 0.5 s, so it's in the cached past tasks but never reaches Toggl. Online, sets the task "knob-test S4 first", taps, and waits 11 s. Picks "knob-test S4 second" from past tasks, then picks the same one again. | The first entry stopped and a new one started for the picked task, while the counter kept going. Picking the same task again changed nothing in Toggl: no new entry. |
 | S5 ✎ | **Sync.** Starts "knob-test S5 elsewhere" as another device would (`#toggl start`), then swipes down. Turns the knob one click. Stops the timer elsewhere (`#toggl stop`) and swipes down. Swipes down once more. Finally starts "knob-test S5 adopted" elsewhere, swipes down and pauses at once. | The first swipe adopts the timer: its task, running, "synced from Toggl". The click sends only the new start, never the description. The next swipe pauses the knob ("stopped in Toggl"), and the one after says "in sync". The timer adopted and then paused within seconds is stopped in Toggl, not deleted. |
 | S6 ✎⏱ | **Offline.** Sets the task "knob-test S6 offline run", switches Wi-Fi off, runs 12 s, then switches Wi-Fi back on. | Within 40 s of reconnecting, the stretch is logged in Toggl with its start and stop times. |
 | S7 ✎⏱ | **Pomodoro entry.** Sets 25 min and the task "knob-test S7 pomodoro", taps, waits 11 s and holds. | An entry started right away, and the reset stopped it. |

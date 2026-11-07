@@ -54,24 +54,31 @@ void cloud_debug_start_elsewhere(const char *description);
 void cloud_debug_stop_elsewhere(void);
 int64_t cloud_running_entry(void); // Toggl id of the knob's running entry, 0 = none or not created yet
 
-// Recent Toggl entries (finished ones, newest first, one per task/project pair),
-// fetched fresh on every cloud_fetch_entries(); at most 50 entries are requested.
-#define MAX_ENTRIES 50
+// The knob caches the recent entries and the projects in NVS, so both lists open at once,
+// also offline, and survive a restart. Toggl is asked for them only when the cache is empty
+// (first boot) or when the user picks "Sync from Toggl" in a list.
+//
+// Recent entries: newest first, one per task/project pair (the running one too), plus the
+// tasks the knob itself starts or renames (cloud_remember_entry).
+#define MAX_ENTRIES 20
 typedef struct {
     char label[96];    // the entry's description, or its Toggl task's name
     int64_t task_id;   // 0 = no Toggl task
     project_t project; // id 0 = no project
 } toggl_entry_t;
+// The state of a cached list's last sync from Toggl (recent entries or projects).
 typedef enum { ENTRIES_IDLE, ENTRIES_LOADING, ENTRIES_OK, ENTRIES_FAILED } entries_state_t;
-bool cloud_fetch_entries(void); // false if it couldn't be queued
-entries_state_t cloud_entries(toggl_entry_t *out, int max, int *n); // copies the list once it's ENTRIES_OK
+bool cloud_fetch_entries(void); // sync the recent entries from Toggl; false if it couldn't be queued
+entries_state_t cloud_entries(toggl_entry_t *out, int max, int *n); // copies the cached list; returns the sync state
+void cloud_remember_entry(const char *label, int64_t task_id, const project_t *project); // to the top, no request
 
-// Active Toggl projects in the default workspace, sorted by name. `version`
-// changes whenever the list is reloaded (0 = never loaded).
+// Active Toggl projects in the default workspace, sorted by name (cached, see above).
+// `version` changes whenever the list is loaded (0 = never loaded).
 bool cloud_toggl_configured(void);
 bool cloud_toggl_ready(void); // connected to the workspace
 void cloud_debug_fields(void *json_object); // adds Toggl/upload counters to a cJSON object (telemetry)
 int cloud_projects(project_t *out, int max, uint32_t *version);
 uint32_t cloud_projects_version(void);
-void cloud_refresh_projects(void);                 // reload if the list is more than 2 minutes old
+bool cloud_sync_projects(void);                    // reload from Toggl; false if it couldn't be queued
+entries_state_t cloud_projects_state(void);        // the state of the last cloud_sync_projects()
 int64_t cloud_match_project(const char *text);     // a project named in `text` (whole words), or 0

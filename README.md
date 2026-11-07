@@ -24,6 +24,7 @@ A Toggl time tracker for the [Waveshare ESP32-S3-Knob-Touch-LCD-1.8](https://www
   - Forgot to start? Turn the knob clockwise while tracking: each click moves the start a minute earlier, in Toggl too. Anticlockwise takes a minute off.
   - Tap the task for your recent entries and pick one. While tracking, that switches to a new entry and the counter keeps going.
   - Tap the pill to pick a project. The running entry follows.
+  - Both lists are a copy on the knob: they open at once, work offline and survive a restart. "Sync from Toggl" at the top of each list reloads it.
   - Swipe down to sync. If a timer was started elsewhere (on your phone, say), the knob picks it up. If its own timer was stopped elsewhere, it pauses.
   - The knob only talks to Toggl when you do something. It never polls, because Toggl's free plan allows few requests.
 - **Voice tasks.** Tap the mic and say what you're working on. OpenAI speech-to-text turns it into the task, and a waveform shows the knob hearing you. Saying a project name ("Acme review") selects that project. While running, it renames the running entry.
@@ -43,14 +44,14 @@ A Toggl time tracker for the [Waveshare ESP32-S3-Knob-Touch-LCD-1.8](https://www
 | Hold 0.7 s | Both | Reset. Tracking: to 00:00; Pomodoro: to the length you set. Also clears the task ("Untitled") and the project ("No project") |
 | Turn the knob | Tracking, running | Clockwise adds a minute, anticlockwise takes one off (the Toggl entry follows) |
 | Turn the knob | Pomodoro | Reset: sets the length (1–60). Paused: to the next whole minute up or down. Running: locked ("pause to adjust") |
-| Tap the **task** | Both | Recent Toggl entries ("Untitled" on top); turn to scroll, tap to choose |
-| Tap the **project pill** | Both | Toggl projects ("No project" last) |
+| Tap the **task** | Both | Recent tasks: "Sync from Toggl", "Untitled" (where it opens), then the last 20 entries. Turn, then tap to choose |
+| Tap the **project pill** | Both | Projects: "Sync from Toggl", "No project" (where it opens), then your projects. Turn, then tap to choose |
 | Tap the **mic** | Both | Listen; stops when you pause, or tap again |
 | Swipe up | Both | Switch Tracking ↔ Pomodoro (not while running: "pause to switch"). Closes an open list |
 | Swipe down | Tracking | Sync with Toggl's running timer. Closes an open list |
 | Swipe left / right | Both | Switch Mono ↔ Inverted |
 
-A tap that just misses the mic does nothing (you feel a bump), so a near miss never starts the timer. In a list, a tap chooses the highlighted row. In the projects list that takes a turn of the knob first, so a reflex tap never clears your project. Lists close by themselves after 10 seconds, and when a Pomodoro runs out.
+A tap that just misses the mic does nothing (you feel a bump), so a near miss never starts the timer. In a list, a tap chooses the highlighted row only after a turn of the knob, so a reflex tap never changes your task or project. On "Sync from Toggl", a tap reloads that list from Toggl. Lists close by themselves after 10 seconds, and when a Pomodoro runs out.
 
 There's also an interactive design preview of the interface in `preview/toggl-pomodoro-timer.html`. Open it in a browser. It simulates Toggl, including timers started and stopped elsewhere.
 
@@ -177,6 +178,7 @@ For a build that doesn't listen on USB at all, run `idf.py menuconfig` → **Kno
 |---|---|
 | No `/dev/cu.usbmodem*` port | Flip the USB-C plug at the knob end; the other orientation reaches the second chip. |
 | No mic on the screen, or "Toggl isn't set up" | That key is empty in `main/secrets.h`; fill it in, rebuild and flash. |
+| A new project or past entry isn't in a list | The lists are a cached copy. Turn up to "Sync from Toggl" in that list and tap. |
 | "not saved in Toggl" | Toggl turned down a start or a change for good (for example, the project was archived). The knob keeps counting; swipe down to see what Toggl has. |
 | "no Wi-Fi", or the Wi-Fi glyph keeps pulsing | Check the network name and password, and that the network is 2.4 GHz. |
 | Log says `Toggl rejected the API key` | Use a Toggl 2.0 key (`toggl_sk_…`), not a classic Toggl Track token. |
@@ -208,7 +210,7 @@ esptool.py --port /dev/cu.usbmodem101 write_flash 0 backup/factory-firmware-esp3
   - Runs are started and stopped through `tracking/start` and `tracking/stop`. Before stopping, the knob checks `tracking/current` to make sure the running timer is still the one it started.
   - Knob adjustments, renames and project changes go out as one `PATCH` once they settle (1.5 s), carrying only the fields that changed. Accidental starts are removed with `DELETE`.
   - Swipe-down sync is a single `tracking/current` request.
-  - Entries come from a `time-entries` query (the newest 50 from the last 30 days, finished ones only).
+  - Recent entries come from a `time-entries` query (the newest 50 from the last 30 days, kept as the last 20 distinct tasks), and projects from the workspace's `projects`. Both are cached in NVS and loaded only on the first start or by "Sync from Toggl". Tasks the knob starts go to the top of the cache without a request.
 - **Networking.** One background task handles all HTTPS, so the screen never waits. It uses public DNS (1.1.1.1 and 8.8.8.8), IPv4, 32 KB TCP windows and software AES, with retries for dropped connections.
 
 ## Project layout

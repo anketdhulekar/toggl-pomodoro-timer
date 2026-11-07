@@ -273,20 +273,31 @@ class Run:
             self.is_offline = False
 
     def pick_in_list(self, open_key, target_idx):
-        """Open a list, move to row target_idx and choose it."""
+        """Open a list, move to row target_idx (ROW_NONE, or ROW_FIRST + n) and choose it."""
         k = self.k
         k.send(open_key)
-        if open_key == "e":
-            st = k.wait_state(lambda s: s["list"] == "tasks" and s["entries_state"] != "loading", 15)
-        else:
-            st = k.wait_state(lambda s: s["list"] == "projects", 5)
+        st = k.wait_state(lambda s: s["list"] == ("tasks" if open_key == "e" else "projects"), 5)
         steps = target_idx - st["list_idx"]
         if steps:
             k.send(("+" if steps > 0 else "-") * abs(steps))
-        elif open_key == "o":  # a tap without a turn keeps the project: turn away and back
-            k.send("-" if st["list_idx"] == 0 else "-+")
+        else:  # a tap without a turn only closes the list: turn away and back
+            k.send("-+")
         k.send("t")
         return k.state()
+
+    def sync_list(self, open_key):
+        """Open a list, turn up to "Sync from Toggl", tap, and wait for the result (the list stays open)."""
+        k = self.k
+        k.send(open_key)
+        k.wait_state(lambda s: s["list"] != "closed", 5)
+        k.send("-")
+        k.send("t")
+        return k.wait_state(lambda s: s["list_sync"] in ("ok", "failed"), 20)
+
+
+# List rows: "Sync from Toggl", then "Untitled" / "No project" (where the cursor starts), then the cache.
+ROW_SYNC, ROW_NONE, ROW_FIRST = 0, 1, 2
+FETCHED = r"Toggl: \d+ (projects|recent entries)"  # logged by every fetch of a list
 
 
 def rim_px(rows, deg, r=167):
@@ -400,11 +411,10 @@ def L1(r):
     k.send("o")
     st = k.state()
     rows = k.capture(r.png("projects"))
-    want = next((i for i, p in enumerate(r.projects) if p["id"] == st0["project_id"]), len(r.projects))
     k.send("u")
     closed = k.state()
     # A tap without turning the knob keeps the project, even one that isn't in the list
-    # (the list opens on "No project" for it, and a reflex tap mustn't clear it).
+    # (the list opens on "No project", and a reflex tap mustn't clear it).
     k.send("o")
     k.send("t")
     kept = k.state()
@@ -417,11 +427,11 @@ def L1(r):
         k.cmd(f"project {st0['project_id']} {st0['project_color']} {st0['project']}")
     else:
         k.cmd("project 0")
-    ok = (st["list"] == "projects" and st["projects"] > 0 and st["list_idx"] == want and closed["list"] == "closed" and rows
-          and kept["project_id"] == st0["project_id"] and kept["list"] == "closed"
-          and unl["list_idx"] == len(r.projects) and unl_kept["project_id"] == 999999)
-    return ok, (f"{st['projects']} projects + 'No project' last, opened on row {st['list_idx']} (projects.png); swipe up closed it; "
-                f"a tap without turning kept the project (also an unlisted one, opened on 'No project')")
+    ok = (st["list"] == "projects" and st["projects"] > 0 and st["list_idx"] == ROW_NONE and closed["list"] == "closed"
+          and rows and kept["project_id"] == st0["project_id"] and kept["list"] == "closed"
+          and unl["list_idx"] == ROW_NONE and unl_kept["project_id"] == 999999)
+    return ok, (f"'Sync from Toggl', 'No project', then {st['projects']} projects; opened on row {st['list_idx']} "
+                f"(projects.png); swipe up closed it; a tap without turning kept the project (also an unlisted one)")
 
 
 def L2(r):
@@ -430,13 +440,12 @@ def L2(r):
     if not r.projects:
         return False, "no projects"
     proj = r.projects[-1] if r.projects[-1]["id"] != st0["project_id"] else r.projects[0]
-    idx = r.projects.index(proj)
-    st = r.pick_in_list("o", idx)
+    st = r.pick_in_list("o", ROW_FIRST + r.projects.index(proj))
     time.sleep(0.6)
     rows = k.capture(r.png("rim"))
     rim = rim_px(rows, 100) if rows else (0, 0, 0)
     picked = st["project_id"] == proj["id"] and near(rim, hexrgb(proj["color"]), 30)
-    none = r.pick_in_list("o", len(r.projects))
+    none = r.pick_in_list("o", ROW_NONE)
     time.sleep(0.6)
     rows2 = k.capture(r.png("rim-none"))
     white = rows2 and min(rim_px(rows2, 100)) > 220  # no project: the Tracking rim takes the ink color (white on Mono)
@@ -457,32 +466,31 @@ def L4(r):
     k = r.k
     r.idle("track")
     k.send("e")
-    first = k.state()
-    st = k.wait_state(lambda s: s["entries_state"] in ("ok", "failed"), 15)
+    st = k.state()  # straight from the cache: no "loading"
     rows = k.capture(r.png("tasks"))
     k.send("u")
-    ok = first["list"] == "tasks" and st["entries_state"] == "ok" and st["entries"] > 0 and st["list_idx"] == 1
-    return ok, f"{first['entries_state']} -> {st['entries_state']}, {st['entries']} entries, starts on row {st['list_idx']} (tasks.png)"
+    ok = st["list"] == "tasks" and st["list_sync"] == "idle" and st["entries"] > 0 and st["list_idx"] == ROW_NONE
+    return ok, f"opened at once with {st['entries']} cached entries, on row {st['list_idx']} ('Untitled') (tasks.png)"
 
 
 def L5(r):
     k = r.k
     r.idle("track")
     i = k.mark()
-    for _ in range(2):
-        k.send("e")
-        k.wait_state(lambda s: s["entries_state"] in ("ok", "failed"), 15)
+    for key in ("e", "o", "e", "o"):
+        k.send(key)
+        k.wait_state(lambda s: s["list"] != "closed", 5)
         k.send("u")
-        time.sleep(1.0)
-    n = sum(1 for l in k.since(i) if re.search(r"Toggl: \d+ recent entries", l))
-    return n == 2, f"{n} fetches for 2 opens"
+    time.sleep(1.0)
+    n = sum(1 for l in k.since(i) if re.search(FETCHED, l))
+    return n == 0, f"{n} requests to Toggl for 4 opens"
 
 
 def L6(r):
     k = r.k
     r.idle("track")
-    st = r.pick_in_list("e", 1)
     _, entries = k.lists()
+    st = r.pick_in_list("e", ROW_FIRST)
     want = entries[0] if entries else None
     ok = bool(want) and st["task"] == want["label"] and st["project_id"] == want["project_id"]
     return ok, f"task {st['task']!r}, project {st['project']!r}"
@@ -492,23 +500,70 @@ def L7(r):
     k = r.k
     st0 = r.idle("track")
     k.cmd("task knob-test L7")
-    st = r.pick_in_list("e", 0)
+    st = r.pick_in_list("e", ROW_NONE)
     return st["task"] == "" and st["project_id"] == st0["project_id"], "task cleared ('Untitled'), project kept"
 
 
+def L9(r):
+    """"Sync from Toggl" reloads each list with one request; the list stays open on row 1."""
+    k = r.k
+    r.online()
+    r.idle("track")
+    res_ok, notes = True, []
+    for key, name, what in (("o", "projects", "projects"), ("e", "tasks", "recent entries")):
+        i = k.mark()
+        k.send(key)
+        k.wait_state(lambda s: s["list"] == name, 5)
+        k.send("-")
+        on_sync = k.state()
+        k.send("t")
+        st = k.wait_state(lambda s: s["list_sync"] in ("ok", "failed"), 20)
+        n = sum(1 for l in k.since(i) if re.search(rf"Toggl: \d+ {what}", l))
+        k.send("u")
+        ok = (on_sync["list_idx"] == ROW_SYNC and st["list_sync"] == "ok" and st["list"] == name
+              and st["list_idx"] == ROW_NONE and n == 1)
+        res_ok &= ok
+        notes.append(f"{name}: {st['list_sync']}, {n} request, back on row {st['list_idx']}")
+    return res_ok, "; ".join(notes)
+
+
 def L8(r):
-    # (Runs in the offline block.) A list that couldn't load has only the "Untitled"
-    # placeholder: a tap closes it and keeps the task.
+    # (Runs in the offline block.) The cached list works offline; "Sync from Toggl" fails
+    # with "couldn't reach Toggl", and the task is kept.
     k = r.k
     r.offline()
     r.idle("track")
     k.cmd("task knob-test L8 kept")
     k.send("e")
-    failed = k.wait_state(lambda s: s["entries_state"] == "failed", 10)
+    opened = k.state()
+    k.send("-")
     k.send("t")
+    failed = k.wait_state(lambda s: s["list_sync"] in ("ok", "failed"), 10)
+    k.send("+")  # the next turn clears the error
+    cleared = k.state()
+    k.send("u")
     st = k.state()
-    ok = failed["entries_state"] == "failed" and st["list"] == "closed" and st["task"] == "knob-test L8 kept" and st["mode"] == "idle"
-    return ok, f"past tasks offline: {failed['entries_state']} (couldn't reach Toggl); a tap closed it, task {st['task']!r} kept"
+    ok = (opened["entries"] > 0 and failed["list_sync"] == "failed" and failed["list"] == "tasks"
+          and cleared["list_sync"] == "idle" and st["list"] == "closed" and st["task"] == "knob-test L8 kept")
+    return ok, (f"offline: {opened['entries']} cached entries shown; sync {failed['list_sync']} (couldn't reach Toggl), "
+                f"cleared by a turn; task {st['task']!r} kept")
+
+
+def L10(r):
+    # (Offline block.) A task the knob starts goes to the top of the cached past tasks, with no request.
+    k = r.k
+    r.offline()
+    r.idle("track")
+    k.cmd("task knob-test L10 started")
+    i = k.mark()
+    k.send("s")
+    time.sleep(0.5)
+    k.send("s")
+    _, entries = k.lists()
+    n = sum(1 for l in k.since(i) if re.search(FETCHED, l))
+    k.send("r")
+    top = entries[0]["label"] if entries else ""
+    return top == "knob-test L10 started" and n == 0, f"top of the past tasks: {top!r}; {n} requests"
 
 
 # -- Settings ---------------------------------------------------------------------------------
@@ -540,6 +595,21 @@ def G2(r):
     keys = ("app", "theme", "set_min", "task", "project_id")
     ok = all(got[x] == want[x] for x in keys)
     return ok, "after reboot: " + ", ".join(f"{x}={got[x]!r}" for x in keys)
+
+
+def G3(r):
+    """The cached lists survive a restart: no request for them at boot."""
+    k = r.k
+    i = k.mark()
+    k.cmd("reboot")
+    k.wait(r"pomodoro: starting:", 15, since=i)
+    m = k.wait(r"cache: (\d+) projects, (\d+) recent entries", 10, since=i)
+    st = k.wait_state(lambda s: s["wifi"] and s["toggl"], 30)
+    time.sleep(3)
+    n = sum(1 for l in k.since(i) if re.search(FETCHED, l))
+    ok = bool(m) and int(m.group(1)) > 0 and int(m.group(2)) > 0 and st["projects"] > 0 and n == 0
+    return ok, (f"after reboot: {m.group(1) if m else '?'} projects and {m.group(2) if m else '?'} recent entries "
+                f"from the cache; {n} requests for them")
 
 
 # -- Offline block: modes, Tracking, Pomodoro, hit areas (nothing reaches Toggl) ------------
@@ -1032,6 +1102,14 @@ def S3(r):
 
 def S4(r):
     k = r.k
+    # Put "knob-test S4 second" in the cached past tasks: a short run offline never reaches Toggl.
+    r.offline()
+    r.idle("track")
+    k.cmd("task knob-test S4 second")
+    k.send("s")
+    time.sleep(0.5)
+    k.send("s")
+    k.send("r")
     r.online()
     r.idle("track")
     k.cmd("task knob-test S4 first")
@@ -1039,30 +1117,24 @@ def S4(r):
     k.send("s")
     first = started(k, "knob-test S4 first", i)
     time.sleep(11)
-    # Switch to a knob-test entry from the list (not one of your real tasks).
-    k.send("e")
-    k.wait_state(lambda s: s["entries_state"] in ("ok", "failed"), 15)
+    # Switch to the other knob-test task in the list (not one of your real tasks).
     _, entries = k.lists()
-    idx = next((n for n, e in enumerate(entries) if e["label"].startswith("knob-test S")), None)
-    k.send("u")
+    idx = next((n for n, e in enumerate(entries) if e["label"] == "knob-test S4 second"), None)
     if idx is None:
         k.send("s")
         k.send("r")
         return False, "no knob-test entry in the list to switch to"
     label = entries[idx]["label"]
     before = k.state()["elapsed_s"]
-    st = r.pick_in_list("e", idx + 1)
+    st = r.pick_in_list("e", ROW_FIRST + idx)
     second = started(k, label, i, timeout=20)
     stopped = k.wait(rf"Toggl entry {first} stopped", 20, since=i) if first else None
     after = k.state()
-    # Picking the same task again (it's in the list from an earlier run) changes nothing in Toggl.
-    k.send("e")
-    k.wait_state(lambda s: s["entries_state"] in ("ok", "failed"), 15)
+    # Picking the same task again changes nothing in Toggl.
     _, entries = k.lists()
-    k.send("u")
     same = next((n for n, e in enumerate(entries) if e["label"] == label and e["project_id"] == after["project_id"]), None)
     j = k.mark()
-    again = r.pick_in_list("e", same + 1) if same is not None else None
+    again = r.pick_in_list("e", ROW_FIRST + same) if same is not None else None
     time.sleep(1.5)
     unchanged = bool(again) and bool(k.wait(r"task from the list: unchanged", 1, since=j)) \
         and not any(re.search(r"Toggl entry \d+ (started|stopped)", l) for l in k.since(j)) \
@@ -1175,14 +1247,14 @@ def X1(r):
 
 CASES = [("B1", B1), ("B2", B2), ("B3", B3),
          ("D1", D1), ("D2", D2), ("D3", D3), ("D4", D4),
-         ("L1", L1), ("L2", L2), ("L3", L3), ("L4", L4), ("L5", L5), ("L6", L6), ("L7", L7), ("G1", G1),
+         ("L1", L1), ("L2", L2), ("L3", L3), ("L4", L4), ("L5", L5), ("L6", L6), ("L7", L7), ("L9", L9), ("G1", G1),
          # Offline block: nothing below reaches Toggl until Wi-Fi comes back.
          ("M1", M1), ("M2", M2), ("M3", M3), ("R1-R3", R1_R3), ("R4", R4), ("R5", R5), ("R6", R6),
          ("P1", P1), ("P2", P2), ("P3", P3), ("P4", P4), ("P5", P5), ("P6", P6), ("P7", P7), ("P8", P8), ("H1", H1),
-         ("L8", L8),
+         ("L8", L8), ("L10", L10),
          ("V1-V2", V1_V2), ("V3", V3), ("V4", V4),
          ("S1", S1), ("S2", S2), ("S3", S3), ("S4", S4), ("S5", S5), ("S6", S6), ("S7", S7),
-         ("X1", X1), ("G2", G2), ("B5", B5), ("B4", B4)]
+         ("X1", X1), ("G2", G2), ("G3", G3), ("B5", B5), ("B4", B4)]
 
 
 def save_original(r):
@@ -1197,6 +1269,9 @@ def restore(r):
         return
     r.online()
     r.idle(o["app"], theme=o["theme"])
+    # The run's knob-test tasks went to the top of the cached past tasks: sync them with Toggl.
+    r.sync_list("e")
+    k.send("u")
     k.cmd(f"set {o['set_min']}")
     k.cmd("task " + o["task"])
     k.cmd(f"task_id {o['task_id']}")  # the Toggl task the name belongs to (#task clears it)
